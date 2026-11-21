@@ -25,7 +25,7 @@
   <arg name="auto_confirm" default="0.0"/>
   <!-- known initial pose of the robot in the map frame -->
   <arg name="initial_x" default="0.0"/>
-  <arg name="initial_y" default="-2.7"/>
+  <arg name="initial_y" default="-3.4"/>
   <arg name="initial_yaw" default="1.5708"/>
 
   <include if="$(arg start_drivers)" file="$(find limo_bringup)/launch/limo_start.launch"/>

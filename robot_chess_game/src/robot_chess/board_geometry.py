@@ -6,16 +6,12 @@ is placed in the map frame with (origin_x, origin_y, yaw), which makes it
 possible to use the same code for the simulated arena and for a board taped
 on the laboratory floor.
 
-Pieces always stand at square centres.  With a square size of 0.7 m and a
-piece diameter of 0.18 m the lines between the squares form a free road
-network 0.52 m wide, wider than the LIMO (0.22 m), so a robot can reach
-any square no matter how crowded the board is.
+Pieces always stand at square centres, the robots drive on the lanes
+between the squares (see road_network.py).
 """
 import math
 
 import chess
-
-from robot_chess.pieces import PIECE_RADIUS
 
 
 def normalize_angle(a):
@@ -24,35 +20,66 @@ def normalize_angle(a):
 
 class BoardGeometry(object):
 
-    PARAM_KEYS = ("square_size", "origin_x", "origin_y", "yaw",
+    PARAM_KEYS = ("square_size", "origin_x", "origin_y", "yaw", "piece_radius",
                   "graveyard_offset", "graveyard_spacing", "graveyard_slots",
-                  "workspace_half_extent", "orthogonal_approach",
-                  "robot_radius", "clearance_margin")
+                  "graveyard_approach", "ring_margin", "robot_length", "robot_width")
 
-    def __init__(self, square_size=0.7, origin_x=0.0, origin_y=0.0, yaw=0.0,
-                 graveyard_offset=4.5, graveyard_spacing=0.35,
-                 graveyard_slots=15, workspace_half_extent=4.8,
-                 orthogonal_approach=0.42, robot_radius=0.20,
-                 clearance_margin=0.05):
+    def __init__(self, square_size=0.8, origin_x=0.0, origin_y=0.0, yaw=0.0,
+                 piece_radius=0.09, graveyard_offset=4.7, graveyard_spacing=0.4,
+                 graveyard_slots=15, graveyard_approach=0.4, ring_margin=0.5,
+                 robot_length=0.32, robot_width=0.22):
         self.square_size = float(square_size)
         self.origin_x = float(origin_x)
         self.origin_y = float(origin_y)
         self.yaw = float(yaw)
+        self.piece_radius = float(piece_radius)
         self.graveyard_offset = float(graveyard_offset)
         self.graveyard_spacing = float(graveyard_spacing)
         self.graveyard_slots = int(graveyard_slots)
-        self.workspace_half_extent = float(workspace_half_extent)
-        self.orthogonal_approach = float(orthogonal_approach)
-        # Standing exactly on a square corner keeps the robot clear of all
-        # four pieces around that corner.
-        self.diagonal_approach = self.square_size / math.sqrt(2.0)
-        self.robot_radius = float(robot_radius)
-        self.clearance = self.robot_radius + PIECE_RADIUS + float(clearance_margin)
+        self.graveyard_approach = float(graveyard_approach)
+        self.ring_margin = float(ring_margin)
+        self.robot_length = float(robot_length)
+        self.robot_width = float(robot_width)
 
     @classmethod
     def from_dict(cls, params):
         """Build from a (ROS parameter) dictionary; unknown keys are ignored."""
         return cls(**{k: params[k] for k in cls.PARAM_KEYS if k in params})
+
+    # ------------------------------------------------------------- checks
+    def robot_radius(self):
+        """Circumscribed radius of the rectangular robot footprint."""
+        return math.hypot(self.robot_length / 2.0, self.robot_width / 2.0)
+
+    def validate(self, min_clearance=0.03):
+        """Raise ValueError if the robot cannot drive/turn safely on the board.
+
+        Checked clearances (robot circle or half width vs. piece surface):
+          * turning in place on a square-side midpoint (the approach point),
+            between the two pieces it separates;
+          * driving along a lane;
+          * turning on the ring road next to the outer pieces;
+          * turning at a graveyard approach point next to the neighbour slots.
+        """
+        r, p = self.robot_radius(), self.piece_radius
+        s2 = self.square_size / 2.0
+        checks = {
+            "turn at a square-side midpoint": s2 - p - r,
+            "drive along a lane": s2 - p - self.robot_width / 2.0,
+            "turn on the ring road": self.ring_margin + s2 - p - r,
+            "turn at a graveyard slot": math.hypot(self.graveyard_spacing,
+                                                   self.graveyard_approach) - p - r,
+            "graveyard outside the ring road":
+                self.graveyard_offset - self.graveyard_approach
+                - (self.board_half_size() + self.ring_margin) - 0.2,
+            "graveyard slots beside the board":
+                self.board_half_size() + self.ring_margin
+                - (self.graveyard_slots - 1) / 2.0 * self.graveyard_spacing - 0.2,
+        }
+        bad = ["%s (%.3f m)" % (k, v) for k, v in checks.items() if v < min_clearance]
+        if bad:
+            raise ValueError("board geometry too tight: " + ", ".join(bad))
+        return checks
 
     # ------------------------------------------------------------------ frames
     def board_to_map(self, bx, by):
@@ -101,44 +128,3 @@ class BoardGeometry(object):
 
     def graveyard_slot(self, color, index):
         return self.board_to_map(*self.graveyard_slot_board(color, index))
-
-    # --------------------------------------------------------------- approach
-    def approach_poses(self, target_xy, obstacle_xys, robot_xy=None):
-        """Candidate robot poses from which a piece at target_xy can be
-        reached (picked up or put down).
-
-        target_xy, obstacle_xys and robot_xy are map-frame points.  A
-        candidate is kept only if the robot's circumscribed circle keeps
-        `clearance` from every other piece and the pose lies inside the
-        workspace.  Returns a list of (x, y, yaw) in the map frame, robot
-        facing the target, sorted by preference: orthogonal approaches first
-        (they bring the camera closer), then by distance to robot_xy.
-        """
-        tbx, tby = self.map_to_board(*target_xy)
-        obstacles = [self.map_to_board(*p) for p in obstacle_xys]
-        obstacles = [p for p in obstacles
-                     if math.hypot(p[0] - tbx, p[1] - tby) > 1e-3]
-        rb = self.map_to_board(*robot_xy) if robot_xy is not None else None
-
-        candidates = []
-        for kind, dist, angles in (
-                (0, self.orthogonal_approach, (0, 90, 180, 270)),
-                (1, self.diagonal_approach, (45, 135, 225, 315))):
-            for deg in angles:
-                a = math.radians(deg)
-                px, py = tbx + dist * math.cos(a), tby + dist * math.sin(a)
-                if max(abs(px), abs(py)) > self.workspace_half_extent:
-                    continue
-                if any(math.hypot(px - ox, py - oy) < self.clearance
-                       for ox, oy in obstacles):
-                    continue
-                facing = normalize_angle(a + math.pi)
-                travel = math.hypot(px - rb[0], py - rb[1]) if rb else 0.0
-                candidates.append((kind, travel, px, py, facing))
-
-        candidates.sort(key=lambda c: (c[0], c[1]))
-        out = []
-        for _, _, px, py, facing in candidates:
-            mx, my = self.board_to_map(px, py)
-            out.append((mx, my, self.board_yaw_to_map(facing)))
-        return out

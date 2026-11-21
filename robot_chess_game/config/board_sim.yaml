@@ -1,19 +1,21 @@
 # Floor chessboard used in the Gazebo arena (see generate_arena.py).
 # All lengths in metres, board frame = map frame in simulation.
+# BoardGeometry.validate() checks that the robot fits on every lane.
 board:
-  square_size: 0.7            # 8 x 0.7 = 5.6 m board
+  square_size: 0.8            # 8 x 0.8 = 6.4 m board, 0.62 m free lanes
   origin_x: 0.0               # board centre in the map frame
   origin_y: 0.0
   yaw: 0.0                    # rotation of the board frame in the map frame
-  graveyard_offset: 4.5       # captured pieces stand at x = -/+ 4.5 (white / black)
-  graveyard_spacing: 0.35
+  piece_radius: 0.09
+  graveyard_offset: 4.7       # captured pieces stand at x = -/+ 4.7 (white / black)
+  graveyard_spacing: 0.4
   graveyard_slots: 15
-  workspace_half_extent: 4.8  # robots never plan approach poses outside this square
-  orthogonal_approach: 0.42   # robot centre -> piece centre when facing a square edge
-  robot_radius: 0.20          # circumscribed radius of the LIMO footprint
-  clearance_margin: 0.05
+  graveyard_approach: 0.4     # robot centre -> graveyard piece when placing it
+  ring_margin: 0.5            # ring road 0.5 m outside the board edge
+  robot_length: 0.32          # LIMO footprint
+  robot_width: 0.22
 
 # Where the robots wait while the opponent is moving (board frame).
 home:
-  white: {x: 0.0, y: -3.9, yaw: 1.5708}
-  black: {x: 0.0, y: 3.9, yaw: -1.5708}
+  white: {x: 0.0, y: -4.5, yaw: 1.5708}
+  black: {x: 0.0, y: 4.5, yaw: -1.5708}

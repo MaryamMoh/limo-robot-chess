@@ -41,7 +41,7 @@ Visualization Manager:
     - Class: rviz/Path
       Name: Plan
       Enabled: true
-      Topic: /move_base/GlobalPlanner/plan
+      Topic: /route
       Color: 0; 255; 0
       Value: true
     - Class: rviz/Image
@@ -60,8 +60,6 @@ Visualization Manager:
     - Class: rviz/MoveCamera
     - Class: rviz/SetInitialPose
       Topic: /initialpose
-    - Class: rviz/SetGoal
-      Topic: /move_base_simple/goal
     - Class: rviz/PublishPoint
   Value: true
   Views:

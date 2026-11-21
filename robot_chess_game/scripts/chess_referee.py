@@ -160,7 +160,6 @@ class ChessReferee(object):
             goal = ExecuteMoveGoal()
             goal.move_uci = move.uci()
             goal.tasks = [PieceTask(**t.as_dict()) for t in tasks]
-            goal.occupied_squares = self.physical.occupied_squares()
             self.pending = san
             self.status = GameState.STATUS_ROBOT_MOVING
             self.status_text = "%s robot is playing %s (%d task%s)" % (

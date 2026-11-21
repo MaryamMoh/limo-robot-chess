@@ -4,16 +4,21 @@
 Action server  execute_move  (robot_chess_msgs/ExecuteMove)
 
 For every PieceTask of the goal:
-    1. approach  - choose a collision-free pose next to the piece
-                   (BoardGeometry.approach_poses) and drive there with move_base;
-                   if navigation fails, the next candidate pose is tried
-    2. align     - turn in place until the camera looks straight at the piece
-    3. verify    - ask the camera (verify_piece) whether the expected piece is there
-    4. pick      - carrier attach (simulation: piece goes on the robot plate,
+    1. approach  - plan the shortest route on the road network
+                   (robot_chess.road_network) to one of the approach points
+                   of the piece and drive it; turn to face the piece
+    2. verify    - ask the camera (verify_piece) whether the expected piece is there
+    3. pick      - carrier attach (simulation: piece goes on the robot plate,
                    real robot: an assistant is asked to load it)
-    5. transport - approach the destination the same way
-    6. place     - carrier release (+ replace for a pawn promotion)
+    4. transport - drive to an approach point of the destination
+    5. place     - carrier release (+ replace for a pawn promotion)
 After the last task the robot drives back to its home pose.
+
+Driving: the route is a list of straight, axis-parallel segments.  On each
+waypoint the robot turns in place towards the next one and then drives
+straight with a proportional heading controller.  The pose comes from TF
+(map -> base, i.e. AMCL + EKF).  If the LiDAR sees something closer than
+~safety_distance in front, the robot stops and waits until the way is free.
 
 Parameters
     ~robot_name        name used by the carrier (Gazebo model name)
@@ -23,25 +28,24 @@ Parameters
     ~global_frame      map
     ~carrier_ns        namespace of the carrier services (/chess_carrier)
     ~verify_with_camera, ~abort_on_mismatch
-    ~navigation_timeout [s]
+    ~max_speed, ~max_turn_speed, ~safety_distance, ~blocked_timeout
 """
 import math
-import re
+import threading
 
 import actionlib
 import rospy
 import tf2_ros
-from actionlib_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
-from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Path
+from sensor_msgs.msg import LaserScan
 
 from robot_chess.board_geometry import BoardGeometry, normalize_angle
+from robot_chess.road_network import RoadNetwork, heading_error
 from robot_chess_msgs.msg import (ExecuteMoveAction, ExecuteMoveFeedback,
                                   ExecuteMoveResult)
 from robot_chess_msgs.srv import (AttachPiece, ReleasePiece, ReplacePiece,
                                   VerifyPiece)
-
-GRAVEYARD_RE = re.compile(r"graveyard-(white|black)-(\d+)")
 
 
 class MoveAborted(Exception):
@@ -52,6 +56,10 @@ def yaw_from_quaternion(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
 class PieceMover(object):
 
     def __init__(self):
@@ -59,26 +67,30 @@ class PieceMover(object):
         self.robot_name = rospy.get_param("~robot_name", ns or "limo")
         self.color = rospy.get_param("~color", "white")
         self.geometry = BoardGeometry.from_dict(rospy.get_param("~board", {}))
-        home = rospy.get_param("~home/" + self.color,
-                               {"x": 0.0, "y": -3.9, "yaw": math.pi / 2})
-        hx, hy = self.geometry.board_to_map(home["x"], home["y"])
-        self.home = (hx, hy, self.geometry.board_yaw_to_map(home["yaw"]))
+        self.geometry.validate()
+        homes = rospy.get_param("~home", {})
+        self.network = RoadNetwork(self.geometry, {
+            c: (h["x"], h["y"], h["yaw"]) for c, h in homes.items()})
         self.base_frame = rospy.get_param("~base_frame", "base_footprint")
         self.global_frame = rospy.get_param("~global_frame", "map")
         self.verify = rospy.get_param("~verify_with_camera", True)
         self.abort_on_mismatch = rospy.get_param("~abort_on_mismatch", False)
-        self.nav_timeout = rospy.get_param("~navigation_timeout", 180.0)
-        self.max_candidates = rospy.get_param("~max_approach_candidates", 4)
+        self.max_speed = rospy.get_param("~max_speed", 0.3)
+        self.max_turn = rospy.get_param("~max_turn_speed", 0.8)
+        self.safety_distance = rospy.get_param("~safety_distance", 0.25)
+        self.blocked_timeout = rospy.get_param("~blocked_timeout", 60.0)
+        self.position_tolerance = rospy.get_param("~position_tolerance", 0.03)
+        self.heading_tolerance = rospy.get_param("~heading_tolerance", 0.03)
         self.return_home = rospy.get_param("~return_home", True)
         carrier = rospy.get_param("~carrier_ns", "/chess_carrier")
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.cmd_pub = rospy.Publisher("cmd_vel", Twist, queue_size=1)
-
-        self.move_base = actionlib.SimpleActionClient("move_base", MoveBaseAction)
-        rospy.loginfo("[%s] waiting for move_base", self.robot_name)
-        self.move_base.wait_for_server()
+        self.route_pub = rospy.Publisher("route", Path, queue_size=1, latch=True)
+        self.scan_lock = threading.Lock()
+        self.front_range = float("inf")
+        rospy.Subscriber("scan", LaserScan, self.on_scan, queue_size=1)
 
         rospy.loginfo("[%s] waiting for carrier services in %s", self.robot_name, carrier)
         for name in ("attach", "release", "replace"):
@@ -88,22 +100,35 @@ class PieceMover(object):
         self.replace = rospy.ServiceProxy(carrier + "/replace", ReplacePiece)
         self.verify_srv = rospy.ServiceProxy("verify_piece", VerifyPiece)
 
+        rospy.loginfo("[%s] waiting for localisation (%s -> %s)", self.robot_name,
+                      self.global_frame, self.base_frame)
+        while not rospy.is_shutdown():
+            try:
+                self.robot_pose()
+                break
+            except tf2_ros.TransformException:
+                rospy.sleep(0.5)
+
         self.server = actionlib.SimpleActionServer(
             "execute_move", ExecuteMoveAction, execute_cb=self.execute, auto_start=False)
         self.server.start()
         rospy.loginfo("[%s] piece mover ready", self.robot_name)
 
-    # ================================================================ helpers
-    def feedback(self, index, stage, text):
-        rospy.loginfo("[%s] task %d %s: %s", self.robot_name, index, stage, text)
-        self.server.publish_feedback(ExecuteMoveFeedback(task_index=index, stage=stage,
-                                                         text=text))
+    # ================================================================ sensing
+    def on_scan(self, scan):
+        """Closest return in a +-20 degree cone in front of the robot."""
+        best = float("inf")
+        angle = scan.angle_min
+        for r in scan.ranges:
+            if abs(angle) < 0.35 and scan.range_min < r < scan.range_max:
+                best = min(best, r)
+            angle += scan.angle_increment
+        with self.scan_lock:
+            self.front_range = best
 
-    def check_preempt(self):
-        if self.server.is_preempt_requested() or rospy.is_shutdown():
-            self.move_base.cancel_all_goals()
-            self.stop()
-            raise MoveAborted("preempted")
+    def path_blocked(self):
+        with self.scan_lock:
+            return self.front_range < self.safety_distance
 
     def robot_pose(self):
         t = self.tf_buffer.lookup_transform(self.global_frame, self.base_frame,
@@ -111,80 +136,114 @@ class PieceMover(object):
         tr = t.transform
         return (tr.translation.x, tr.translation.y, yaw_from_quaternion(tr.rotation))
 
+    # ================================================================ driving
+    def feedback(self, index, stage, text):
+        rospy.loginfo("[%s] task %d %s: %s", self.robot_name, index, stage, text)
+        self.server.publish_feedback(ExecuteMoveFeedback(task_index=index, stage=stage,
+                                                         text=text))
+
+    def check_preempt(self):
+        if self.server.is_preempt_requested() or rospy.is_shutdown():
+            self.stop()
+            raise MoveAborted("preempted")
+
     def stop(self):
         self.cmd_pub.publish(Twist())
 
-    def navigate(self, x, y, yaw):
-        goal = MoveBaseGoal()
-        goal.target_pose.header.frame_id = self.global_frame
-        goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.pose.position.x = x
-        goal.target_pose.pose.position.y = y
-        goal.target_pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.target_pose.pose.orientation.w = math.cos(yaw / 2.0)
-        self.move_base.send_goal(goal)
-        deadline = rospy.Time.now() + rospy.Duration(self.nav_timeout)
-        rate = rospy.Rate(5)
-        while not self.move_base.wait_for_result(rospy.Duration(0.01)):
-            self.check_preempt()
-            if rospy.Time.now() > deadline:
-                self.move_base.cancel_goal()
-                return False
-            rate.sleep()
-        return self.move_base.get_state() == GoalStatus.SUCCEEDED
-
-    def face_point(self, tx, ty, tolerance=0.03, timeout=10.0):
-        """Rotate in place until the robot (and its camera) faces (tx, ty)."""
+    def turn_to(self, target_yaw, timeout=20.0):
+        """Rotate in place to an absolute heading (map frame)."""
         rate = rospy.Rate(20)
         deadline = rospy.Time.now() + rospy.Duration(timeout)
         while rospy.Time.now() < deadline:
             self.check_preempt()
-            x, y, yaw = self.robot_pose()
-            err = normalize_angle(math.atan2(ty - y, tx - x) - yaw)
-            if abs(err) < tolerance:
+            err = normalize_angle(target_yaw - self.robot_pose()[2])
+            if abs(err) < self.heading_tolerance:
                 break
             cmd = Twist()
-            w = max(-0.6, min(0.6, 1.5 * err))
-            cmd.angular.z = math.copysign(max(abs(w), 0.15), w)
+            w = clamp(2.0 * err, -self.max_turn, self.max_turn)
+            cmd.angular.z = math.copysign(max(abs(w), 0.12), w)
             self.cmd_pub.publish(cmd)
             rate.sleep()
         self.stop()
 
-    def approach(self, index, target_xy, obstacles, label):
-        """Drive to a pose from which the piece at target_xy can be handled."""
-        self.check_preempt()
+    def drive_to(self, wx, wy):
+        """Drive straight to (wx, wy); the robot already faces it."""
+        rate = rospy.Rate(20)
+        x, y, _ = self.robot_pose()
+        timeout = 20.0 + math.hypot(wx - x, wy - y) / 0.05
+        deadline = rospy.Time.now() + rospy.Duration(timeout)
+        blocked_since = None
+        while True:
+            self.check_preempt()
+            if rospy.Time.now() > deadline:
+                raise MoveAborted("timeout driving to (%.2f, %.2f)" % (wx, wy))
+            x, y, yaw = self.robot_pose()
+            dist = math.hypot(wx - x, wy - y)
+            if dist < self.position_tolerance:
+                break
+            err = heading_error(x, y, yaw, wx, wy)
+            if abs(err) > 0.6:
+                # overshoot or large drift: stop and re-aim
+                self.stop()
+                self.turn_to(math.atan2(wy - y, wx - x))
+                continue
+            if self.path_blocked():
+                self.stop()
+                if blocked_since is None:
+                    blocked_since = rospy.Time.now()
+                    rospy.logwarn("[%s] obstacle ahead - waiting", self.robot_name)
+                elif (rospy.Time.now() - blocked_since).to_sec() > self.blocked_timeout:
+                    raise MoveAborted("path blocked near (%.2f, %.2f)" % (x, y))
+                rate.sleep()
+                continue
+            blocked_since = None
+            cmd = Twist()
+            cmd.linear.x = clamp(0.8 * dist, 0.05, self.max_speed) * max(0.0, math.cos(err))
+            cmd.angular.z = clamp(2.5 * err, -self.max_turn, self.max_turn)
+            self.cmd_pub.publish(cmd)
+            rate.sleep()
+        self.stop()
+
+    def follow(self, waypoints, final_yaw):
+        for wx, wy in waypoints:
+            x, y, _ = self.robot_pose()
+            if math.hypot(wx - x, wy - y) < self.position_tolerance:
+                continue
+            self.turn_to(math.atan2(wy - y, wx - x))
+            self.drive_to(wx, wy)
+        self.turn_to(final_yaw)
+
+    def go(self, index, label, goals, stage="approach"):
+        x, y, _ = self.robot_pose()
         try:
-            rxy = self.robot_pose()[:2]
-        except tf2_ros.TransformException:
-            rxy = None
-        candidates = self.geometry.approach_poses(target_xy, obstacles, rxy)
-        if not candidates:
-            raise MoveAborted("no free approach pose around %s" % label)
-        for i, (x, y, yaw) in enumerate(candidates[:self.max_candidates]):
-            self.feedback(index, "approach", "%s via (%.2f, %.2f) [candidate %d]" % (
-                label, x, y, i + 1))
-            if self.navigate(x, y, yaw):
-                self.face_point(*target_xy)
-                return
-            rospy.logwarn("[%s] navigation to candidate %d for %s failed",
-                          self.robot_name, i + 1, label)
-        raise MoveAborted("could not reach %s" % label)
+            waypoints, final_yaw, length = self.network.plan((x, y), goals)
+        except ValueError as exc:
+            raise MoveAborted("no route to %s: %s" % (label, exc))
+        self.feedback(index, stage, "%s: %.1f m, %d segment(s)" % (
+            label, length, max(1, len(waypoints) - 1)))
+        self.publish_route([(x, y)] + list(waypoints))
+        self.follow(waypoints, final_yaw)
+
+    def publish_route(self, points):
+        path = Path()
+        path.header.frame_id = self.global_frame
+        path.header.stamp = rospy.Time.now()
+        for px, py in points:
+            ps = PoseStamped()
+            ps.header = path.header
+            ps.pose.position.x, ps.pose.position.y = px, py
+            ps.pose.orientation.w = 1.0
+            path.poses.append(ps)
+        self.route_pub.publish(path)
 
     # ============================================================== execution
-    @staticmethod
-    def _obstacle_points(occupied, graveyard_used):
-        return list(occupied.values()) + [p for p in graveyard_used.values()]
-
     def execute(self, goal):
-        occupied = {sq: self.geometry.square_center(sq) for sq in goal.occupied_squares}
-        graveyard_used = {}
         try:
             for index, task in enumerate(goal.tasks):
-                self.run_task(index, task, occupied, graveyard_used)
+                self.run_task(index, task)
             if self.return_home:
-                self.feedback(len(goal.tasks), "return", "driving home")
-                if not self.navigate(*self.home):
-                    rospy.logwarn("[%s] could not reach the home pose", self.robot_name)
+                node, yaw = self.network.home_board(self.color)
+                self.go(len(goal.tasks), "home", [(node, yaw)], stage="return")
         except MoveAborted as exc:
             self.stop()
             result = ExecuteMoveResult(success=False, message=str(exc))
@@ -200,21 +259,9 @@ class PieceMover(object):
         self.server.set_succeeded(ExecuteMoveResult(success=True,
                                                     message="move %s done" % goal.move_uci))
 
-    def run_task(self, index, task, occupied, graveyard_used):
-        src = (task.from_x, task.from_y)
-        dst = (task.to_x, task.to_y)
-
-        # Graveyard slots before the destination slot are already filled.
-        m = GRAVEYARD_RE.match(task.to_label)
-        if m:
-            color, slot = m.group(1), int(m.group(2))
-            for i in range(slot):
-                graveyard_used.setdefault("%s-%d" % (color, i),
-                                          self.geometry.graveyard_slot(color, i))
-
+    def run_task(self, index, task):
         # ---- pick
-        self.approach(index, src, self._obstacle_points(occupied, graveyard_used),
-                      task.from_label)
+        self.go(index, task.from_label, self.network.approaches(task.from_label))
         if self.verify:
             self.feedback(index, "verify", "looking for %s %s" % (
                 task.piece_color, task.piece_type))
@@ -235,39 +282,21 @@ class PieceMover(object):
         res = self.attach(self.robot_name, task.model_name)
         if not res.success:
             raise MoveAborted("pick failed: %s" % res.message)
-        occupied.pop(task.from_label, None)
 
         # ---- place
-        self.approach(index, dst, self._obstacle_points(occupied, graveyard_used),
-                      task.to_label)
+        self.go(index, task.to_label, self.network.approaches(task.to_label),
+                stage="transport")
         self.feedback(index, "place", "%s -> %s" % (task.model_name, task.to_label))
-        res = self.release(self.robot_name, task.model_name, dst[0], dst[1])
+        res = self.release(self.robot_name, task.model_name, task.to_x, task.to_y)
         if not res.success:
             raise MoveAborted("place failed: %s" % res.message)
-        if m:
-            graveyard_used["%s-%d" % (m.group(1), int(m.group(2)))] = dst
-        else:
-            occupied[task.to_label] = dst
 
         if task.promote_to:
             self.feedback(index, "place", "promotion to %s" % task.promote_to)
             res = self.replace(task.model_name, task.promoted_model_name,
-                               task.piece_color, task.promote_to, dst[0], dst[1])
+                               task.piece_color, task.promote_to, task.to_x, task.to_y)
             if not res.success:
                 raise MoveAborted("promotion failed: %s" % res.message)
-
-        # back off a little so the next approach starts clear of the piece
-        self.backoff()
-
-    def backoff(self, distance=0.12, speed=0.1):
-        rate = rospy.Rate(20)
-        end = rospy.Time.now() + rospy.Duration(distance / speed)
-        cmd = Twist()
-        cmd.linear.x = -speed
-        while rospy.Time.now() < end and not rospy.is_shutdown():
-            self.cmd_pub.publish(cmd)
-            rate.sleep()
-        self.stop()
 
 
 if __name__ == "__main__":

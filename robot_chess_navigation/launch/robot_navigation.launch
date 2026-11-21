@@ -1,13 +1,14 @@
 <?xml version="1.0"?>
 <!--
-  Localisation and navigation stack of ONE robot.
+  Localisation stack of ONE robot.
 
     [noisy_odometry]  (simulation only) perfect odom -> noisy odom
     [ekf]             noisy wheel odometry + IMU  -> odom -> base TF
     [amcl]            LiDAR + known map + known initial pose -> map -> odom TF
-    [move_base]       global planner (Dijkstra) + DWA local planner
 
-  A global map_server publishing /map must be running.
+  Path planning and driving on the board's road network are done by
+  robot_chess_game/piece_mover.py.  A global map_server publishing /map
+  must be running.
 -->
 <launch>
   <arg name="robot_name" default=""/>
@@ -47,17 +48,6 @@
       <param name="initial_pose_a" value="$(arg initial_yaw)"/>
       <remap from="map" to="/map"/>
       <remap from="static_map" to="/static_map"/>
-    </node>
-
-    <node pkg="move_base" type="move_base" name="move_base" respawn="false" output="screen">
-      <rosparam command="load" file="$(find robot_chess_navigation)/config/costmap_common.yaml" ns="global_costmap"/>
-      <rosparam command="load" file="$(find robot_chess_navigation)/config/costmap_common.yaml" ns="local_costmap"/>
-      <rosparam command="load" file="$(find robot_chess_navigation)/config/move_base.yaml"/>
-      <param name="global_costmap/global_frame" value="map"/>
-      <param name="global_costmap/robot_base_frame" value="$(arg base_frame)"/>
-      <param name="local_costmap/global_frame" value="$(arg odom_frame)"/>
-      <param name="local_costmap/robot_base_frame" value="$(arg base_frame)"/>
-      <param name="DWAPlannerROS/odom_topic" value="odometry/filtered"/>
     </node>
   </group>
 </launch>
