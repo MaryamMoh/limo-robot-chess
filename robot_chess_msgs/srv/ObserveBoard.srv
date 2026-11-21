@@ -1,0 +1,7 @@
+# Read the board with the camera (the arm must be in the observe pose).
+bool calibrate          # true: learn colours, assuming the start position
+---
+bool success
+string occupancy        # 64 chars a1..h8: '.', 'w', 'b'
+float32[] confidence    # per square, 0..1
+string message

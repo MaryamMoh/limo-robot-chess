@@ -1,6 +1,0 @@
-# Put a piece on the robot's carrying plate.
-string robot_name
-string model_name
----
-bool success
-string message

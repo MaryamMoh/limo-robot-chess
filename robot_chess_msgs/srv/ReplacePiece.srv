@@ -1,10 +1,7 @@
-# Swap a piece for another one in place (pawn promotion).
-string old_model_name
-string new_model_name
+# Simulation only: exchange the piece held at the gripper position for a
+# new one (pawn promotion).
 string color
 string piece_type
-float64 x
-float64 y
 ---
 bool success
 string message

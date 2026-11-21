@@ -1,4 +1,4 @@
-# Goal: physically perform a chess move.
+# Goal: physically perform one of my moves with the arm.
 string move_uci
 robot_chess_msgs/PieceTask[] tasks
 ---
@@ -6,5 +6,5 @@ bool success
 string message
 ---
 uint32 task_index
-string stage                 # "approach", "verify", "pick", "transport", "place", "return"
+string stage                 # "pick", "place", "promote", "observe"
 string text

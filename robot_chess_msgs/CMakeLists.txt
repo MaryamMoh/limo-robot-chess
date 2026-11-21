@@ -14,10 +14,8 @@ add_message_files(FILES
 )
 
 add_service_files(FILES
-  SubmitMove.srv
-  VerifyPiece.srv
-  AttachPiece.srv
-  ReleasePiece.srv
+  ObserveBoard.srv
+  OverrideMove.srv
   ReplacePiece.srv
 )
 

@@ -1,0 +1,6 @@
+# Tell the player which move the opponent made, when the camera cannot
+# decide (e.g. under-promotion).  SAN or UCI.
+string move
+---
+bool accepted
+string message

@@ -1,8 +1,0 @@
-# Put a carried piece down at (x, y) in the map frame.
-string robot_name
-string model_name
-float64 x
-float64 y
----
-bool success
-string message
