@@ -80,6 +80,7 @@ class PieceMover(object):
         self.safety_distance = rospy.get_param("~safety_distance", 0.25)
         self.blocked_timeout = rospy.get_param("~blocked_timeout", 60.0)
         self.position_tolerance = rospy.get_param("~position_tolerance", 0.03)
+        self.start_tolerance = rospy.get_param("~start_tolerance", 0.15)
         self.heading_tolerance = rospy.get_param("~heading_tolerance", 0.03)
         self.return_home = rospy.get_param("~return_home", True)
         carrier = rospy.get_param("~carrier_ns", "/chess_carrier")
@@ -154,10 +155,13 @@ class PieceMover(object):
         """Rotate in place to an absolute heading (map frame)."""
         rate = rospy.Rate(20)
         deadline = rospy.Time.now() + rospy.Duration(timeout)
-        while rospy.Time.now() < deadline:
+        while True:
             self.check_preempt()
             err = normalize_angle(target_yaw - self.robot_pose()[2])
             if abs(err) < self.heading_tolerance:
+                break
+            if rospy.Time.now() > deadline:
+                rospy.logwarn("[%s] turn timeout, heading error %.2f rad", self.robot_name, err)
                 break
             cmd = Twist()
             w = clamp(2.0 * err, -self.max_turn, self.max_turn)
@@ -167,21 +171,42 @@ class PieceMover(object):
         self.stop()
 
     def drive_to(self, wx, wy):
-        """Drive straight to (wx, wy); the robot already faces it."""
+        """Drive straight to (wx, wy); the robot already faces it.
+
+        The goal counts as reached when the remaining distance *along the
+        segment* is below the tolerance, so a small lateral offset near the
+        goal never makes the robot circle around it.  Far from the goal the
+        robot steers towards it; in the last 15 cm it keeps the segment
+        direction.
+        """
         rate = rospy.Rate(20)
-        x, y, _ = self.robot_pose()
-        timeout = 20.0 + math.hypot(wx - x, wy - y) / 0.05
-        deadline = rospy.Time.now() + rospy.Duration(timeout)
+        x0, y0, _ = self.robot_pose()
+        length = math.hypot(wx - x0, wy - y0)
+        if length < 1e-3:
+            return
+        ux, uy = (wx - x0) / length, (wy - y0) / length
+        deadline = rospy.Time.now() + rospy.Duration(20.0 + length / 0.05)
+        last_log = rospy.Time.now()
         blocked_since = None
         while True:
             self.check_preempt()
-            if rospy.Time.now() > deadline:
-                raise MoveAborted("timeout driving to (%.2f, %.2f)" % (wx, wy))
             x, y, yaw = self.robot_pose()
+            remaining = (wx - x) * ux + (wy - y) * uy
             dist = math.hypot(wx - x, wy - y)
-            if dist < self.position_tolerance:
+            if rospy.Time.now() > deadline:
+                raise MoveAborted("timeout driving to (%.2f, %.2f), robot at (%.2f, %.2f)"
+                                  % (wx, wy, x, y))
+            if remaining < self.position_tolerance:
                 break
-            err = heading_error(x, y, yaw, wx, wy)
+            if dist > 0.15:
+                err = heading_error(x, y, yaw, wx, wy)
+            else:
+                err = normalize_angle(math.atan2(uy, ux) - yaw)
+            if (rospy.Time.now() - last_log).to_sec() > 5.0:
+                last_log = rospy.Time.now()
+                rospy.loginfo("[%s] driving: at (%.2f, %.2f, %.2f) -> (%.2f, %.2f), "
+                              "%.2f m left, heading error %.2f", self.robot_name,
+                              x, y, yaw, wx, wy, remaining, err)
             if abs(err) > 0.6:
                 # overshoot or large drift: stop and re-aim
                 self.stop()
@@ -198,16 +223,20 @@ class PieceMover(object):
                 continue
             blocked_since = None
             cmd = Twist()
-            cmd.linear.x = clamp(0.8 * dist, 0.05, self.max_speed) * max(0.0, math.cos(err))
+            cmd.linear.x = clamp(0.8 * remaining, 0.05, self.max_speed) * max(0.0, math.cos(err))
             cmd.angular.z = clamp(2.5 * err, -self.max_turn, self.max_turn)
             self.cmd_pub.publish(cmd)
             rate.sleep()
         self.stop()
 
     def follow(self, waypoints, final_yaw):
-        for wx, wy in waypoints:
+        """Turn-then-drive along the waypoints.  The first waypoint is the
+        network node the robot stands on; it is skipped when the robot is
+        already within `start_tolerance` of it (localisation noise)."""
+        for i, (wx, wy) in enumerate(waypoints):
             x, y, _ = self.robot_pose()
-            if math.hypot(wx - x, wy - y) < self.position_tolerance:
+            tolerance = self.start_tolerance if i == 0 else self.position_tolerance
+            if math.hypot(wx - x, wy - y) < tolerance:
                 continue
             self.turn_to(math.atan2(wy - y, wx - x))
             self.drive_to(wx, wy)

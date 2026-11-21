@@ -15,6 +15,7 @@ import sys
 
 import rospy
 from gazebo_msgs.srv import GetModelState
+from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 
 from robot_chess.board_geometry import BoardGeometry
@@ -83,7 +84,32 @@ class SmokeTest(object):
         if err > POSITION_TOLERANCE or p.z > 0.05:
             raise RuntimeError("%s is not on %s" % (model, square))
 
+    def yaw_of(self, model):
+        q = self.model_state(model_name=model, relative_entity_name="world").pose.orientation
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def motion_check(self, robot):
+        """Spin the robot briefly and compare its Gazebo ground truth yaw."""
+        pub = rospy.Publisher("/%s/cmd_vel" % robot, Twist, queue_size=1)
+        before = self.yaw_of(robot)
+        cmd = Twist()
+        cmd.angular.z = 0.5
+        end = rospy.Time.now() + rospy.Duration(2.0)
+        while rospy.Time.now() < end:
+            pub.publish(cmd)
+            rospy.sleep(0.05)
+        pub.publish(Twist())
+        rospy.sleep(0.5)
+        turned = math.atan2(math.sin(self.yaw_of(robot) - before),
+                            math.cos(self.yaw_of(robot) - before))
+        print("motion check %s: commanded ~1.0 rad, Gazebo ground truth turned %.2f rad"
+              % (robot, turned))
+        if abs(turned) < 0.2:
+            raise RuntimeError("%s does not move on cmd_vel" % robot)
+
     def run(self):
+        for robot in ("white", "black"):
+            self.motion_check(robot)
         for color, move, model, square in MOVES:
             start = rospy.Time.now()
             self.play(color, move)
