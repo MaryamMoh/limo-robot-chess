@@ -12,8 +12,11 @@ do - and checks that
 """
 import math
 import sys
+import threading
 
 import rospy
+import tf2_ros
+from gazebo_msgs.msg import ModelStates
 from gazebo_msgs.srv import GetModelState
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
@@ -42,6 +45,44 @@ class SmokeTest(object):
         self.submit = rospy.ServiceProxy("/chess/submit_move", SubmitMove)
         self.model_state = rospy.ServiceProxy("/gazebo/get_model_state", GetModelState)
         self.geometry = BoardGeometry.from_dict(rospy.get_param("/chess_referee/board"))
+
+    # ------------------------------------------------------ diagnostics
+    def start_monitor(self):
+        """Every 5 s print ground truth vs. estimated pose of both robots."""
+        self.truth = {}
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        rospy.Subscriber("/gazebo/model_states", ModelStates, self.on_models, queue_size=1)
+        rospy.Timer(rospy.Duration(5.0), self.report)
+
+    def on_models(self, msg):
+        self.truth = {n: p for n, p in zip(msg.name, msg.pose) if n in ("white", "black")}
+
+    @staticmethod
+    def _yaw(q):
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def report(self, _event):
+        for robot in ("white", "black"):
+            gt = self.truth.get(robot)
+            if gt is None:
+                continue
+            line = "[pose %s] truth (%.2f, %.2f, %.2f)" % (
+                robot, gt.position.x, gt.position.y, self._yaw(gt.orientation))
+            for parent in ("map", robot + "/odom"):
+                try:
+                    t = self.tf_buffer.lookup_transform(parent, robot + "/base_footprint",
+                                                        rospy.Time(0))
+                    tr = t.transform
+                    line += " | %s (%.2f, %.2f, %.2f)" % (
+                        parent, tr.translation.x, tr.translation.y, self._yaw(tr.rotation))
+                    if parent == "map":
+                        line += " err %.3f m" % math.hypot(
+                            tr.translation.x - gt.position.x, tr.translation.y - gt.position.y)
+                except tf2_ros.TransformException:
+                    line += " | %s n/a" % parent
+            print(line)
+        sys.stdout.flush()
 
     def on_event(self, msg):
         self.events.append(msg.data)
@@ -108,6 +149,8 @@ class SmokeTest(object):
             raise RuntimeError("%s does not move on cmd_vel" % robot)
 
     def run(self):
+        self.start_monitor()
+        rospy.sleep(2.0)
         for robot in ("white", "black"):
             self.motion_check(robot)
         for color, move, model, square in MOVES:
