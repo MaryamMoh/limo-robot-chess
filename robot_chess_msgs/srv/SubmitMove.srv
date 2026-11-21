@@ -1,8 +1,0 @@
-# Sent by a player console to the referee.
-# "move" is a move in SAN ("Nf3", "exd5", "O-O", "e8=Q") or UCI
-# ("g1f3", "e7e8q"), or one of the commands: "resign", "draw".
-string color
-string move
----
-bool accepted
-string message
