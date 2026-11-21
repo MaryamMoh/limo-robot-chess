@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y git python3-pip xvfb
+          apt-get install -y git python3-pip xvfb liburdfdom-tools
           git clone --depth 1 https://github.com/agilexrobotics/limo_ros.git /tmp/limo_ros
           cp -r /tmp/limo_ros/limo_description src/
           rosdep update --rosdistro noetic

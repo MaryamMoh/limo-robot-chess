@@ -93,3 +93,22 @@ def test_initial_models_unique():
     assert len(set(models.values())) == 32
     assert models["g1"] == "white_knight_g"
     assert models["e8"] == "black_king_e"
+
+
+@pytest.mark.parametrize("config", ["board_sim.yaml", "board_real.yaml"])
+def test_configs_reach_every_square_on_a_full_board(config):
+    """With the shipped configurations every square has an approach pose,
+    even when all 64 squares are occupied, and graveyards are reachable."""
+    import os
+    import yaml
+    path = os.path.join(os.path.dirname(__file__), "..", "config", config)
+    with open(path) as f:
+        g = BoardGeometry.from_dict(yaml.safe_load(f)["board"])
+    full = [g.square_center(sq) for sq in chess.SQUARES]
+    for sq in chess.SQUARES:
+        assert g.approach_poses(g.square_center(sq), full), chess.square_name(sq)
+    for color in ("white", "black"):
+        slots = [g.graveyard_slot(color, i) for i in range(g.graveyard_slots)]
+        for i, slot in enumerate(slots):
+            others = full + slots[:i]
+            assert g.approach_poses(slot, others), (color, i)
