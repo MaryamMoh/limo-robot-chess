@@ -1,71 +1,52 @@
 <?xml version="1.0"?>
 <!--
-  Deployment on ONE real AgileX LIMO PRO.
+  My chess robot in the laboratory: real LIMO + myCobot 280, wrist USB
+  camera, the opponent's robot (another team's software) on the other side.
 
-  The robot plays one side (arg color); the human opponent plays the other
-  side and moves their own pieces by hand (the referee treats that side as
-  "virtual").  The robot has no manipulator: at a piece it asks the lab
-  assistant to load/unload it (manual_carrier.py, confirm with
-  `rosservice call /chess_carrier/confirm`).
-
-  Before:
-    1. roslaunch limo_bringup limo_start.launch pub_odom_tf:=false   (or start_drivers:=true)
-    2. roslaunch astra_camera dabai_u3.launch
-    3. build a map once:  roslaunch robot_chess_navigation gmapping.launch
-       and save it to robot_chess_navigation/maps/lab.yaml
-    4. enter the board position in robot_chess_game/config/board_real.yaml
+  Before the first game:
+    * pip3 install pymycobot chess
+    * calibrate the wrist camera once (intrinsics, see the README)
+    * fill in robot_chess_game/config/player_real.yaml and run check_reach.py
+    * set the pieces in the start position; the robot learns the board
+      colours from it, so do not touch the board until it says "ready"
 -->
 <launch>
-  <arg name="color" default="white"/>
-  <arg name="map" default="$(find robot_chess_navigation)/maps/lab.yaml"/>
-  <arg name="board_config" default="$(find robot_chess_game)/config/board_real.yaml"/>
-  <arg name="image_topic" default="/camera/rgb/image_raw"/>
-  <arg name="start_drivers" default="false"/>
+  <arg name="config" default="$(find robot_chess_game)/config/player_real.yaml"/>
+  <arg name="port" default="/dev/ttyTHS1"/>
+  <arg name="baud" default="1000000"/>
+  <arg name="start_camera" default="true"/>
+  <arg name="video_device" default="/dev/video0"/>
+  <arg name="camera_info_url" default="file://$(env HOME)/.ros/camera_info/wrist_camera.yaml"/>
+  <arg name="start_base" default="false"/>   <!-- only needed with base stations -->
+  <arg name="tcp_offset" default="0.06"/>
   <arg name="rviz" default="false"/>
-  <arg name="auto_confirm" default="0.0"/>
-  <!-- known initial pose of the robot in the map frame -->
-  <arg name="initial_x" default="0.0"/>
-  <arg name="initial_y" default="-3.4"/>
-  <arg name="initial_yaw" default="1.5708"/>
 
-  <include if="$(arg start_drivers)" file="$(find limo_bringup)/launch/limo_start.launch"/>
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find robot_chess_description)/urdf/limo_mycobot.urdf.xacro' tcp_offset:=$(arg tcp_offset)"/>
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher"/>
 
-  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map)">
-    <param name="frame_id" value="map"/>
+  <node pkg="robot_chess_game" type="mycobot_driver.py" name="mycobot_driver" output="screen">
+    <param name="port" value="$(arg port)"/>
+    <param name="baud" value="$(arg baud)"/>
   </node>
 
-  <include file="$(find robot_chess_navigation)/launch/robot_navigation.launch">
-    <arg name="robot_name" value=""/>
-    <arg name="simulation" value="false"/>
-    <arg name="base_frame" value="base_link"/>
-    <arg name="odom_frame" value="odom"/>
-    <arg name="initial_x" value="$(arg initial_x)"/>
-    <arg name="initial_y" value="$(arg initial_y)"/>
-    <arg name="initial_yaw" value="$(arg initial_yaw)"/>
+  <node if="$(arg start_camera)" pkg="usb_cam" type="usb_cam_node" name="wrist_camera" output="screen">
+    <param name="video_device" value="$(arg video_device)"/>
+    <param name="image_width" value="640"/>
+    <param name="image_height" value="480"/>
+    <param name="pixel_format" value="yuyv"/>
+    <param name="camera_frame_id" value="wrist_camera_optical"/>
+    <param name="camera_name" value="wrist_camera"/>
+    <param name="camera_info_url" value="$(arg camera_info_url)"/>
+  </node>
+
+  <include if="$(arg start_base)" file="$(find limo_base)/launch/limo_base.launch"/>
+
+  <include file="$(find robot_chess_game)/launch/player.launch">
+    <arg name="config" value="$(arg config)"/>
+    <arg name="virtual_grasp" value="false"/>
   </include>
-
-  <include file="$(find robot_chess_game)/launch/robot_game.launch">
-    <arg name="robot_name" value=""/>
-    <arg name="carrier_name" value="limo"/>
-    <arg name="color" value="$(arg color)"/>
-    <arg name="base_frame" value="base_link"/>
-    <arg name="board_config" value="$(arg board_config)"/>
-    <arg name="image_topic" value="$(arg image_topic)"/>
-  </include>
-
-  <node pkg="robot_chess_game" type="manual_carrier.py" name="chess_carrier" output="screen">
-    <param name="auto_confirm" value="$(arg auto_confirm)"/>
-  </node>
-
-  <node pkg="robot_chess_game" type="chess_referee.py" name="chess_referee" output="screen">
-    <rosparam command="load" file="$(arg board_config)"/>
-    <rosparam param="robots" subst_value="true">{$(arg color): /}</rosparam>
-  </node>
-
-  <node pkg="robot_chess_game" type="board_visualizer.py" name="board_visualizer">
-    <rosparam command="load" file="$(arg board_config)"/>
-  </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
-        args="-d $(find robot_chess_bringup)/rviz/real_robot.rviz"/>
+        args="-d $(find robot_chess_bringup)/rviz/chess_arm.rviz"/>
 </launch>

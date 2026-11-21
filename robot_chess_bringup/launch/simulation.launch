@@ -1,86 +1,30 @@
 <?xml version="1.0"?>
 <!--
-  Complete simulation: Gazebo arena, 32 pieces, two LIMO PRO robots
-  (white and black) with localisation, navigation, camera verification and
-  move execution, the chess referee and RViz.
+  Test my chess robot in Gazebo before the laboratory:
+  table + board + pieces, my LIMO + myCobot with its player software, and a
+  stand-in for the opponent's robot playing the other side.
 
-  The two human players then open one terminal each:
-      rosrun robot_chess_game player_console.py white
-      rosrun robot_chess_game player_console.py black
+  Watch the game:  rosrun robot_chess_game chess_monitor.py
 -->
 <launch>
   <arg name="gui" default="true"/>
   <arg name="rviz" default="true"/>
-  <arg name="board_config" default="$(find robot_chess_game)/config/board_sim.yaml"/>
-  <arg name="map" default="$(find robot_chess_navigation)/maps/chess_arena.yaml"/>
+  <arg name="config" default="$(find robot_chess_game)/config/player_sim.yaml"/>
+  <arg name="opponent" default="true"/>
+  <arg name="opponent_strategy" default="engine"/>   <!-- engine | random -->
 
-  <!-- known initial poses (= home poses in board_sim.yaml) -->
-  <arg name="white_x" default="0.0"/>
-  <arg name="white_y" default="-4.5"/>
-  <arg name="white_yaw" default="1.5708"/>
-  <arg name="black_x" default="0.0"/>
-  <arg name="black_y" default="4.5"/>
-  <arg name="black_yaw" default="-1.5708"/>
-
-  <!-- world + pieces -->
-  <include file="$(find robot_chess_gazebo)/launch/arena.launch">
+  <include file="$(find robot_chess_gazebo)/launch/sim_world.launch">
     <arg name="gui" value="$(arg gui)"/>
-    <arg name="board_config" value="$(arg board_config)"/>
+    <arg name="config" value="$(arg config)"/>
+    <arg name="opponent" value="$(arg opponent)"/>
+    <arg name="opponent_strategy" value="$(arg opponent_strategy)"/>
   </include>
 
-  <!-- known map, shared by both robots -->
-  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map)">
-    <param name="frame_id" value="map"/>
-  </node>
-
-  <!-- ============================ WHITE robot ============================ -->
-  <include file="$(find robot_chess_gazebo)/launch/spawn_limo.launch">
-    <arg name="robot_name" value="white"/>
-    <arg name="x" value="$(arg white_x)"/>
-    <arg name="y" value="$(arg white_y)"/>
-    <arg name="yaw" value="$(arg white_yaw)"/>
+  <include file="$(find robot_chess_game)/launch/player.launch">
+    <arg name="config" value="$(arg config)"/>
+    <arg name="virtual_grasp" value="true"/>
   </include>
-  <include file="$(find robot_chess_navigation)/launch/robot_navigation.launch">
-    <arg name="robot_name" value="white"/>
-    <arg name="initial_x" value="$(arg white_x)"/>
-    <arg name="initial_y" value="$(arg white_y)"/>
-    <arg name="initial_yaw" value="$(arg white_yaw)"/>
-  </include>
-  <include file="$(find robot_chess_game)/launch/robot_game.launch">
-    <arg name="robot_name" value="white"/>
-    <arg name="color" value="white"/>
-    <arg name="board_config" value="$(arg board_config)"/>
-  </include>
-
-  <!-- ============================ BLACK robot ============================ -->
-  <include file="$(find robot_chess_gazebo)/launch/spawn_limo.launch">
-    <arg name="robot_name" value="black"/>
-    <arg name="x" value="$(arg black_x)"/>
-    <arg name="y" value="$(arg black_y)"/>
-    <arg name="yaw" value="$(arg black_yaw)"/>
-  </include>
-  <include file="$(find robot_chess_navigation)/launch/robot_navigation.launch">
-    <arg name="robot_name" value="black"/>
-    <arg name="initial_x" value="$(arg black_x)"/>
-    <arg name="initial_y" value="$(arg black_y)"/>
-    <arg name="initial_yaw" value="$(arg black_yaw)"/>
-  </include>
-  <include file="$(find robot_chess_game)/launch/robot_game.launch">
-    <arg name="robot_name" value="black"/>
-    <arg name="color" value="black"/>
-    <arg name="board_config" value="$(arg board_config)"/>
-  </include>
-
-  <!-- ============================== game ================================= -->
-  <node pkg="robot_chess_game" type="chess_referee.py" name="chess_referee" output="screen">
-    <rosparam command="load" file="$(arg board_config)"/>
-    <rosparam param="robots">{white: /white, black: /black}</rosparam>
-  </node>
-
-  <node pkg="robot_chess_game" type="board_visualizer.py" name="board_visualizer">
-    <rosparam command="load" file="$(arg board_config)"/>
-  </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
-        args="-d $(find robot_chess_bringup)/rviz/chess.rviz"/>
+        args="-d $(find robot_chess_bringup)/rviz/chess_arm.rviz"/>
 </launch>

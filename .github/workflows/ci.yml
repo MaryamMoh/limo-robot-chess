@@ -17,11 +17,12 @@ jobs:
         run: pip install chess numpy opencv-python-headless pyyaml pytest
       - name: Unit tests
         run: cd robot_chess_game && PYTHONPATH=src pytest -q test
-      - name: Generated world and map are up to date
+      - name: Generated world is up to date
         run: |
-          python robot_chess_gazebo/scripts/generate_arena.py --world /tmp/arena.world --map /tmp/arena
-          cmp /tmp/arena.world robot_chess_gazebo/worlds/chess_arena.world
-          cmp /tmp/arena.pgm robot_chess_navigation/maps/chess_arena.pgm
+          python robot_chess_gazebo/scripts/generate_world.py --world /tmp/table.world
+          cmp /tmp/table.world robot_chess_gazebo/worlds/chess_table.world
+      - name: Simulation layout is reachable
+        run: python robot_chess_game/scripts/check_reach.py robot_chess_game/config/player_sim.yaml
 
   ros-simulation:
     runs-on: ubuntu-22.04
@@ -50,17 +51,17 @@ jobs:
       - name: Check robot model and launch files
         run: |
           source devel/setup.bash
-          xacro $(rospack find robot_chess_description)/urdf/limo_pro.urdf.xacro prefix:=white > /tmp/white.urdf
-          check_urdf /tmp/white.urdf
+          xacro $(rospack find robot_chess_description)/urdf/limo_mycobot.urdf.xacro > /tmp/robot.urdf
+          check_urdf /tmp/robot.urdf
           rosrun roslaunch roslaunch-check $(rospack find robot_chess_bringup)/launch/simulation.launch
-      - name: Two-robot simulation game
+      - name: Simulated game against the opponent stand-in
         run: |
           source devel/setup.bash
           Xvfb :99 -screen 0 1280x1024x24 &
           export DISPLAY=:99
           export PYTHONUNBUFFERED=1
           roslaunch robot_chess_bringup simulation.launch gui:=false rviz:=false > sim.log 2>&1 &
-          timeout 4500 rosrun robot_chess_bringup smoke_test.py
+          timeout 4500 rosrun robot_chess_bringup smoke_test.py _plies:=6
       - name: Simulation log
         if: always()
         run: tail -n 400 sim.log || true
