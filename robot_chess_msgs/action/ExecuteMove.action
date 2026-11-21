@@ -1,0 +1,11 @@
+# Goal: physically perform a chess move.
+string move_uci
+robot_chess_msgs/PieceTask[] tasks
+string[] occupied_squares    # squares occupied before the move (for approach planning)
+---
+bool success
+string message
+---
+uint32 task_index
+string stage                 # "approach", "verify", "pick", "transport", "place", "return"
+string text

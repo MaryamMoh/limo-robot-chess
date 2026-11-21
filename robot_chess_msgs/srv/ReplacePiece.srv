@@ -1,0 +1,10 @@
+# Swap a piece for another one in place (pawn promotion).
+string old_model_name
+string new_model_name
+string color
+string piece_type
+float64 x
+float64 y
+---
+bool success
+string message
