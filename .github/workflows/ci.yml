@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+      - name: Install Python dependencies
+        run: pip install chess numpy opencv-python-headless pyyaml pytest
+      - name: Unit tests
+        run: cd robot_chess_game && PYTHONPATH=src pytest -q test
+      - name: Generated world and map are up to date
+        run: |
+          python robot_chess_gazebo/scripts/generate_arena.py --world /tmp/arena.world --map /tmp/arena
+          cmp /tmp/arena.world robot_chess_gazebo/worlds/chess_arena.world
+          cmp /tmp/arena.pgm robot_chess_navigation/maps/chess_arena.pgm
+
+  ros-simulation:
+    runs-on: ubuntu-22.04
+    container: osrf/ros:noetic-desktop-full
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/limo-robot-chess
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y git python3-pip xvfb
+          git clone --depth 1 https://github.com/agilexrobotics/limo_ros.git /tmp/limo_ros
+          cp -r /tmp/limo_ros/limo_description src/
+          rosdep update --rosdistro noetic
+          rosdep install --from-paths src --ignore-src -y -r --rosdistro noetic
+          pip3 install chess
+      - name: Build
+        run: |
+          source /opt/ros/noetic/setup.bash
+          catkin_make
+      - name: Check robot model and launch files
+        run: |
+          source devel/setup.bash
+          xacro $(rospack find robot_chess_description)/urdf/limo_pro.urdf.xacro prefix:=white > /tmp/white.urdf
+          check_urdf /tmp/white.urdf
+          rosrun roslaunch roslaunch-check $(rospack find robot_chess_bringup)/launch/simulation.launch
+      - name: Two-robot simulation game
+        run: |
+          source devel/setup.bash
+          Xvfb :99 -screen 0 1280x1024x24 &
+          export DISPLAY=:99
+          roslaunch robot_chess_bringup simulation.launch gui:=false rviz:=false > sim.log 2>&1 &
+          timeout 4500 rosrun robot_chess_bringup smoke_test.py
+      - name: Simulation log
+        if: always()
+        run: tail -n 400 sim.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulation-log
+          path: sim.log
