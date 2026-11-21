@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<!--
+  Deployment on ONE real AgileX LIMO PRO.
+
+  The robot plays one side (arg color); the human opponent plays the other
+  side and moves their own pieces by hand (the referee treats that side as
+  "virtual").  The robot has no manipulator: at a piece it asks the lab
+  assistant to load/unload it (manual_carrier.py, confirm with
+  `rosservice call /chess_carrier/confirm`).
+
+  Before:
+    1. roslaunch limo_bringup limo_start.launch pub_odom_tf:=false   (or start_drivers:=true)
+    2. roslaunch astra_camera dabai_u3.launch
+    3. build a map once:  roslaunch robot_chess_navigation gmapping.launch
+       and save it to robot_chess_navigation/maps/lab.yaml
+    4. enter the board position in robot_chess_game/config/board_real.yaml
+-->
+<launch>
+  <arg name="color" default="white"/>
+  <arg name="map" default="$(find robot_chess_navigation)/maps/lab.yaml"/>
+  <arg name="board_config" default="$(find robot_chess_game)/config/board_real.yaml"/>
+  <arg name="image_topic" default="/camera/rgb/image_raw"/>
+  <arg name="start_drivers" default="false"/>
+  <arg name="rviz" default="false"/>
+  <arg name="auto_confirm" default="0.0"/>
+  <!-- known initial pose of the robot in the map frame -->
+  <arg name="initial_x" default="0.0"/>
+  <arg name="initial_y" default="-2.7"/>
+  <arg name="initial_yaw" default="1.5708"/>
+
+  <include if="$(arg start_drivers)" file="$(find limo_bringup)/launch/limo_start.launch"/>
+
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map)">
+    <param name="frame_id" value="map"/>
+  </node>
+
+  <include file="$(find robot_chess_navigation)/launch/robot_navigation.launch">
+    <arg name="robot_name" value=""/>
+    <arg name="simulation" value="false"/>
+    <arg name="base_frame" value="base_link"/>
+    <arg name="odom_frame" value="odom"/>
+    <arg name="initial_x" value="$(arg initial_x)"/>
+    <arg name="initial_y" value="$(arg initial_y)"/>
+    <arg name="initial_yaw" value="$(arg initial_yaw)"/>
+  </include>
+
+  <include file="$(find robot_chess_game)/launch/robot_game.launch">
+    <arg name="robot_name" value=""/>
+    <arg name="carrier_name" value="limo"/>
+    <arg name="color" value="$(arg color)"/>
+    <arg name="base_frame" value="base_link"/>
+    <arg name="board_config" value="$(arg board_config)"/>
+    <arg name="image_topic" value="$(arg image_topic)"/>
+  </include>
+
+  <node pkg="robot_chess_game" type="manual_carrier.py" name="chess_carrier" output="screen">
+    <param name="auto_confirm" value="$(arg auto_confirm)"/>
+  </node>
+
+  <node pkg="robot_chess_game" type="chess_referee.py" name="chess_referee" output="screen">
+    <rosparam command="load" file="$(arg board_config)"/>
+    <rosparam param="robots" subst_value="true">{$(arg color): /}</rosparam>
+  </node>
+
+  <node pkg="robot_chess_game" type="board_visualizer.py" name="board_visualizer">
+    <rosparam command="load" file="$(arg board_config)"/>
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
+        args="-d $(find robot_chess_bringup)/rviz/real_robot.rviz"/>
+</launch>
