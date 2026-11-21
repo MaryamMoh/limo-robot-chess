@@ -17,7 +17,7 @@ on a single real LIMO PRO in the laboratory.
 |---|---|
 | Chess rules | `python-chess`: legal moves, check, mate, stalemate, draws, castling, en passant, promotion |
 | Move → robot tasks | `move_planner.py` splits a move into ordered pick-and-place tasks (capture first, rook after king, promotion swap) |
-| Navigation | `move_base` with a Dijkstra global planner and a DWA local planner, tuned to drive along the 0.52 m lanes between pieces |
+| Navigation | Dijkstra routes on a road network made of the free lanes between the squares; turn-then-drive controller with LiDAR safety stop |
 | Noisy motion model | `noisy_odometry.py`: odometry motion model (rot1, trans, rot2) applied to Gazebo's perfect odometry |
 | Sensor fusion | `robot_localization` EKF fuses wheel odometry and IMU; AMCL fuses the LiDAR with the known map |
 | Known initial pose | each robot starts at its known home pose; AMCL is initialised with it |
@@ -31,7 +31,7 @@ on a single real LIMO PRO in the laboratory.
 robot_chess_msgs/         messages, services, ExecuteMove action
 robot_chess_description/  namespaced LIMO PRO URDF (xacro) with Gazebo sensors
 robot_chess_gazebo/       arena generator, world, piece spawner / simulated carrier
-robot_chess_navigation/   noisy odometry, EKF, AMCL, move_base config, maps
+robot_chess_navigation/   noisy odometry, EKF, AMCL, gmapping, maps
 robot_chess_game/         referee, player console, piece mover, vision, visualiser
                           + the ROS independent library (src/robot_chess) and its tests
 robot_chess_bringup/      simulation.launch, real_robot.launch, RViz configs, smoke test
@@ -79,7 +79,7 @@ rosrun robot_chess_game player_console.py black          # player 2
 ...
 white> e4
 OK: e4 accepted, robot is moving
-  * [white robot] approach: e2 via (0.35, -1.33) [candidate 1]
+  * [white robot] approach: e2: 2.5 m, 1 segment(s)
   * [white robot] verify: OK: saw white pawn in 5/5 frames (expected white pawn)
   * [white robot] pick: white_pawn_e
   ...
@@ -96,19 +96,22 @@ A new game: `rosservice call /chess/new_game` and `rosservice call /chess_carrie
 1. The console sends the move to the **referee** (`/chess/submit_move`), which checks it is legal and that it is that player's turn.
 2. The referee turns the move into **piece tasks** and sends them to the player's robot (`/<color>/execute_move`).
 3. For every task the **piece mover**:
-   - picks a free **approach pose** next to the piece and drives there with move_base (it tries the next candidate if one fails);
+   - plans the shortest route on the board's **road network** to a point beside the piece and drives it;
    - turns to face the piece and asks the **camera** to confirm its colour and type;
    - **picks** the piece up, drives to the destination, **places** it, and swaps the model on a promotion.
 4. The robot returns to its home pose. The referee commits the move, detects check, mate or draw, and hands the turn to the opponent.
 
 ## Board geometry
 
-The board has 8 × 0.7 m squares (5.6 m) and the pieces stand on the square
-centres (0.18 m diameter). This leaves 0.52 m free lanes along all square
-edges, more than twice the LIMO width. Standing on a square corner is always
-collision free, so **any piece can be reached however crowded the board is**.
-Captured white pieces go to the graveyard at x = −4.5 m and black ones to
-x = +4.5 m.
+The board has 8 × 0.8 m squares (6.4 m) and the pieces stand on the square
+centres (0.18 m diameter). The lines between the squares are therefore
+always free, 0.62 m wide lanes, almost three times the LIMO width. The robots
+drive only on these lanes, a ring road around the board, and short spurs to
+the graveyards and their home poses. To handle a piece, a robot stands in the
+middle of one of the square's sides, where turning in place is guaranteed to
+be collision free. **Any piece can be reached however crowded the board is.**
+Captured white pieces go to the graveyard at x = −4.7 m and black ones to
+x = +4.7 m.
 
 Each piece wears a colour band at the height of the LIMO camera. The band
 colour gives the piece type and the body colour gives the side:
@@ -129,8 +132,9 @@ The robot plays one side; the human opponent moves their own pieces by hand and
 types their moves in the console. The LIMO has no arm, so at each piece the robot
 stops, verifies it with the camera, and asks an assistant to load or unload it.
 
-1. Tape an 8 × 8 board with 0.5 m squares on the floor. Mark the pieces with
-   the colour bands above.
+1. Tape an 8 × 8 board with 0.6 m squares on the floor. Use pieces of about
+   10 cm diameter (bottles or cans) marked with the colour bands above.
+   `BoardGeometry.validate()` refuses layouts that are too tight for the robot.
 2. Start the drivers on the robot:
    ```bash
    roslaunch limo_bringup limo_start.launch pub_odom_tf:=false
@@ -174,6 +178,8 @@ container, and plays `1. e4 e5 2. Nf3` with both robots in headless Gazebo.
   after fixing the board.
 - Simulated picking is a "virtual gripper": the piece is placed on the
   robot's carrying plate. On the real robot an assistant does it.
+- The robots stay on the road network. An obstacle on a lane makes the robot
+  wait until it is removed.
 - Underpromotion needs a spare piece of that type next to the board on the real robot.
 
 See [docs/system_design.md](docs/system_design.md) for the full design.
