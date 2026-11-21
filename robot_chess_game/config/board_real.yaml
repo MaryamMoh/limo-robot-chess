@@ -1,0 +1,19 @@
+# Chessboard taped on the laboratory floor for the real LIMO PRO.
+# Measure the board centre and orientation in the map built with gmapping
+# (e.g. with RViz "Publish Point") and enter them below.
+board:
+  square_size: 0.5            # 8 x 0.5 = 4.0 m board
+  origin_x: 0.0               # board centre in the map frame  <-- measure
+  origin_y: 0.0               #                                <-- measure
+  yaw: 0.0                    # board +x (a->h) direction in the map frame
+  graveyard_offset: 2.6
+  graveyard_spacing: 0.25
+  graveyard_slots: 15
+  workspace_half_extent: 2.9
+  orthogonal_approach: 0.36
+  robot_radius: 0.20
+  clearance_margin: 0.03
+
+home:
+  white: {x: 0.0, y: -2.7, yaw: 1.5708}
+  black: {x: 0.0, y: 2.7, yaw: -1.5708}
