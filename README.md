@@ -1,5 +1,7 @@
 # LIMO Robot Chess
 
+[![CI](https://github.com/MaryamMoh/limo-robot-chess/actions/workflows/ci.yml/badge.svg)](https://github.com/MaryamMoh/limo-robot-chess/actions/workflows/ci.yml)
+
 Two AgileX **LIMO PRO** robots play chess on a giant floor chessboard.
 Each side of the board belongs to a human player who decides the moves; the
 player's robot then executes every move physically. It navigates on its own to
