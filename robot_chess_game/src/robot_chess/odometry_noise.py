@@ -33,9 +33,12 @@ class OdometryNoiseModel(object):
         self.prev_true = None
         self.pose = None          # noisy (x, y, yaw)
 
-    def reset(self, pose):
-        self.prev_true = tuple(pose)
-        self.pose = tuple(pose)
+    def reset(self, true_pose, noisy_pose=None):
+        """Start tracking.  `noisy_pose` is the initial reported pose, e.g.
+        (0, 0, 0) when odometry starts at the origin of the odom frame while
+        the ground truth is expressed in the world frame."""
+        self.prev_true = tuple(true_pose)
+        self.pose = tuple(noisy_pose if noisy_pose is not None else true_pose)
 
     def _sample(self, variance):
         return self.rng.gauss(0.0, math.sqrt(max(variance, 0.0)))

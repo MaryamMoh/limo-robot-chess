@@ -177,7 +177,7 @@ def write_map(prefix, shapes):
         f.write(b"P5\n# chess arena\n%d %d\n255\n" % (n, n))
         for line in rows:
             f.write(line)
-    with open(prefix + ".yaml", "w") as f:
+    with open(prefix + ".yaml", "w", newline="\n") as f:
         f.write("image: %s.pgm\nresolution: %.3f\norigin: [%.3f, %.3f, 0.0]\n"
                 "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n" % (
                     os.path.basename(prefix), MAP_RESOLUTION, origin, origin))
@@ -198,7 +198,7 @@ def main():
     shapes = obstacles()
     for path in (args.world, args.map):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(args.world, "w") as f:
+    with open(args.world, "w", newline="\n") as f:
         f.write(world_sdf(g, shapes))
     write_map(args.map, shapes)
     print("wrote %s and %s.{pgm,yaml}" % (args.world, args.map))

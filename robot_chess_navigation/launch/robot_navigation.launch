@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  Localisation and navigation stack of ONE robot.
+
+    [noisy_odometry]  (simulation only) perfect odom -> noisy odom
+    [ekf]             noisy wheel odometry + IMU  -> odom -> base TF
+    [amcl]            LiDAR + known map + known initial pose -> map -> odom TF
+    [move_base]       global planner (Dijkstra) + DWA local planner
+
+  A global map_server publishing /map must be running.
+-->
+<launch>
+  <arg name="robot_name" default=""/>
+  <arg name="base_frame" default="$(arg robot_name)/base_footprint"/>
+  <arg name="odom_frame" default="$(arg robot_name)/odom"/>
+  <arg name="simulation" default="true"/>
+  <!-- known initial pose in the map frame -->
+  <arg name="initial_x" default="0.0"/>
+  <arg name="initial_y" default="0.0"/>
+  <arg name="initial_yaw" default="0.0"/>
+
+  <group ns="$(arg robot_name)">
+
+    <node if="$(arg simulation)" pkg="robot_chess_navigation" type="noisy_odometry.py"
+          name="noisy_odometry" output="screen">
+      <param name="odom_frame" value="$(arg odom_frame)"/>
+      <param name="base_frame" value="$(arg base_frame)"/>
+      <param name="alpha1" value="0.002"/>
+      <param name="alpha2" value="0.001"/>
+      <param name="alpha3" value="0.002"/>
+      <param name="alpha4" value="0.001"/>
+    </node>
+
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf" output="screen">
+      <rosparam command="load" file="$(find robot_chess_navigation)/config/ekf.yaml"/>
+      <param name="world_frame" value="$(arg odom_frame)"/>
+      <param name="odom_frame" value="$(arg odom_frame)"/>
+      <param name="base_link_frame" value="$(arg base_frame)"/>
+    </node>
+
+    <node pkg="amcl" type="amcl" name="amcl" output="screen">
+      <rosparam command="load" file="$(find robot_chess_navigation)/config/amcl.yaml"/>
+      <param name="odom_frame_id" value="$(arg odom_frame)"/>
+      <param name="base_frame_id" value="$(arg base_frame)"/>
+      <param name="initial_pose_x" value="$(arg initial_x)"/>
+      <param name="initial_pose_y" value="$(arg initial_y)"/>
+      <param name="initial_pose_a" value="$(arg initial_yaw)"/>
+      <remap from="map" to="/map"/>
+      <remap from="static_map" to="/static_map"/>
+    </node>
+
+    <node pkg="move_base" type="move_base" name="move_base" respawn="false" output="screen">
+      <rosparam command="load" file="$(find robot_chess_navigation)/config/costmap_common.yaml" ns="global_costmap"/>
+      <rosparam command="load" file="$(find robot_chess_navigation)/config/costmap_common.yaml" ns="local_costmap"/>
+      <rosparam command="load" file="$(find robot_chess_navigation)/config/move_base.yaml"/>
+      <param name="global_costmap/global_frame" value="map"/>
+      <param name="global_costmap/robot_base_frame" value="$(arg base_frame)"/>
+      <param name="local_costmap/global_frame" value="$(arg odom_frame)"/>
+      <param name="local_costmap/robot_base_frame" value="$(arg base_frame)"/>
+      <param name="DWAPlannerROS/odom_topic" value="odometry/filtered"/>
+    </node>
+  </group>
+</launch>
