@@ -10,6 +10,10 @@ direction, i.e. board_yaw = -pi/2; for black board_yaw = +pi/2.
 
 Captured opponent pieces are put on a grid of "graveyard" slots beside the
 board (also in board coordinates) that must be inside the arm's reach.
+
+base_offset: how far the robot has driven forward (along its own x axis)
+from its home position - used with "base stations" when the board is
+deeper than the arm's reach (see stations.py).
 """
 import math
 
@@ -45,6 +49,7 @@ class BoardGeometry(object):
         self.observe_x = float(observe_x)
         self.observe_y = float(observe_y)
         self.observe_height = float(observe_height)
+        self.base_offset = 0.0
 
     @classmethod
     def from_dict(cls, params):
@@ -56,7 +61,7 @@ class BoardGeometry(object):
         c, s = math.cos(self.board_yaw), math.sin(self.board_yaw)
         m = np.eye(4)
         m[:2, :2] = [[c, -s], [s, c]]
-        m[:3, 3] = [self.board_x, self.board_y, self.board_z]
+        m[:3, 3] = [self.board_x - self.base_offset, self.board_y, self.board_z]
         return m
 
     def to_robot(self, bx, by, bz=0.0):

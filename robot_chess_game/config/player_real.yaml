@@ -1,0 +1,45 @@
+# My robot in the laboratory (real LIMO + myCobot 280).
+#
+# 1. Measure where the board is relative to the robot (base_footprint: on the
+#    floor under the robot centre, x forward, y left) and fill in "board".
+# 2. Check the layout:   rosrun robot_chess_game check_reach.py <this file>
+#    If squares are unreachable, either move the board / robot or add base
+#    stations (the robot then drives forward under the table to reach them).
+# 3. Check the camera mount in robot_chess_description/urdf/limo_mycobot.urdf.xacro
+#    (wrist_camera_joint) matches the real camera.
+board:
+  square_size: 0.02
+  board_x: 0.17
+  board_y: 0.0
+  board_z: 0.22
+  board_yaw: -1.5708         # -pi/2 when playing white, +pi/2 when playing black
+  graveyard_x: 0.095
+  graveyard_y: -0.07
+  graveyard_dx: 0.02
+  graveyard_dy: 0.02
+  graveyard_rows: 5
+  graveyard_slots: 15
+  grasp_height: 0.012
+  travel_height: 0.06
+  observe_x: 0.0
+  observe_y: -0.04
+  observe_height: 0.13
+
+base:
+  stations: [0.0]            # e.g. [0.0, 0.06, 0.12] for a 3 cm board
+  speed: 0.04
+
+player:
+  color: white
+  engine: internal           # internal | stockfish  (sudo apt install stockfish)
+  think_time: 5.0
+  max_depth: 5
+  stable_observations: 4     # the other arm may pause over the board
+  observe_period: 1.5
+
+arm:
+  tcp_offset: 0.06           # measure: flange -> middle of the closed fingers
+  speed: 0.4
+  cartesian_step: 0.01
+  gripper_open: 0.012
+  gripper_closed: 0.004

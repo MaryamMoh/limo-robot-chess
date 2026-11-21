@@ -1,1 +1,3 @@
 chess>=1.9
+# real robot only:
+# pymycobot>=3.6

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!-- My chess-playing robot: brain, camera reading and arm control. -->
+<launch>
+  <arg name="config" default="$(find robot_chess_game)/config/player_sim.yaml"/>
+  <arg name="virtual_grasp" default="false"/>    <!-- true in Gazebo -->
+  <arg name="image" default="/wrist_camera/image_raw"/>
+  <arg name="camera_info" default="/wrist_camera/camera_info"/>
+  <arg name="visualize" default="true"/>
+
+  <node pkg="robot_chess_game" type="arm_executor.py" name="arm_executor" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="virtual_grasp" value="$(arg virtual_grasp)"/>
+  </node>
+
+  <node pkg="robot_chess_game" type="board_vision_node.py" name="board_vision" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <remap from="image" to="$(arg image)"/>
+    <remap from="camera_info" to="$(arg camera_info)"/>
+  </node>
+
+  <node pkg="robot_chess_game" type="chess_player.py" name="chess_player" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <remap from="observe_board" to="/observe_board"/>
+  </node>
+
+  <node if="$(arg visualize)" pkg="robot_chess_game" type="board_visualizer.py"
+        name="board_visualizer">
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>

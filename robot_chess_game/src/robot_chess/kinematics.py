@@ -130,11 +130,13 @@ class MyCobotKinematics(object):
         damping = 0.03
         h = 1e-6
         n = 5 if yaw is None else 6
-        for _ in range(iterations):
+        for it in range(iterations):
             e = self._error(q, target, yaw)
             if np.linalg.norm(e[:3]) < tolerance and np.linalg.norm(e[3:]) < 2e-3:
                 if yaw is None or self._yaw_ok(q, yaw):
                     return q
+            if it == 80 and np.linalg.norm(e[:3]) > 0.02:
+                return None                   # not converging: out of reach
             jac = np.zeros((n, 6))
             for i in range(6):
                 dq = q.copy()

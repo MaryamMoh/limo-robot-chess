@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>robot_chess_game</name>
-  <version>1.0.0</version>
+  <version>2.0.0</version>
   <description>
-    Chess referee, player consoles, move execution (navigation + pick and place),
-    camera based piece verification and board visualisation for two LIMO PRO robots.
+    Chess-playing robot arm (LIMO + myCobot 280): game state and engine, board
+    reading with the wrist camera, opponent move recognition and arm control.
   </description>
   <maintainer email="maryammohamedmahmoud@gmail.com">Maryam Abd-ElRahman</maintainer>
   <license>MIT</license>
@@ -21,13 +21,14 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
-  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
-  <!-- python-chess is installed with pip (see requirements.txt) -->
+  <!-- pip: chess (python-chess); on the real robot also pymycobot -->
 
   <test_depend>python3-pytest</test_depend>
 </package>
