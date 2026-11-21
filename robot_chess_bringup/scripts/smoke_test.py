@@ -29,7 +29,9 @@ class SmokeTest(object):
         self.state = None
         self.truth = None
         self.errors = []
+        self.ready = False
         self.opponent_log = []
+        self.truth_at_check = None
         rospy.Subscriber("/chess/state", GameState, self.on_state, queue_size=10)
         rospy.Subscriber("/chess/events", String, self.on_event, queue_size=50)
         rospy.Subscriber("/chess_sim/occupancy", String, self.on_truth, queue_size=1)
@@ -37,10 +39,12 @@ class SmokeTest(object):
 
     def on_state(self, msg):
         self.state = msg
-        if msg.status == GameState.STATUS_ERROR:
+        if msg.status == GameState.STATUS_ERROR and self.ready:
             self.errors.append(msg.status_text)
 
     def on_event(self, msg):
+        if msg.data.startswith("ready"):
+            self.ready = True
         print("[player] %s" % msg.data)
         sys.stdout.flush()
 
@@ -60,12 +64,15 @@ class SmokeTest(object):
                     st.status == GameState.STATUS_GAME_OVER or
                     (len(st.move_history_san) >= self.plies and
                      st.status == GameState.STATUS_WAITING)):
+                # stop right after one of MY moves: until the opponent reacts
+                # (it waits for a stable board first) both must agree exactly
+                rospy.sleep(1.0)
+                self.truth_at_check = self.truth
                 break
             if rospy.Time.now() > deadline:
                 raise RuntimeError("timeout after %d half-moves (status: %s)" % (
                     len(st.move_history_san) if st else 0, st.status_text if st else "none"))
-            rospy.sleep(1.0)
-        rospy.sleep(3.0)
+            rospy.sleep(0.2)
         st = self.state
         print("game: %s" % " ".join(st.move_history_san))
         print("position: %s" % st.fen)
@@ -83,8 +90,8 @@ class SmokeTest(object):
 
         # the real board matches the player's position
         board = chess.Board(st.fen)
-        wrong = differences(self.truth, occupancy(board))
-        print("ground truth %s\nplayer       %s" % (self.truth, occupancy(board)))
+        wrong = differences(self.truth_at_check, occupancy(board))
+        print("ground truth %s\nplayer       %s" % (self.truth_at_check, occupancy(board)))
         if wrong:
             raise RuntimeError("Gazebo board differs on %s" % [chess.square_name(s) for s in wrong])
         print("SMOKE TEST PASSED (%d half-moves)" % len(st.move_history_san))

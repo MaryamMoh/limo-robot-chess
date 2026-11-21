@@ -129,14 +129,20 @@ class ChessPlayer(object):
         self.arm.wait_for_server()
 
     def calibrate(self):
+        """Learn the board colours from the start position.  Accepted when a
+        calibration and a second, independent reading both give the start
+        position."""
         res = self.observe_pose()
         if not res.success:
             raise RuntimeError(res.message)
-        occ = self.read_board(calibrate=True)
-        wrong = differences(occ, occupancy(chess.Board()))
-        if wrong:
-            raise RuntimeError("calibration: squares %s do not look like the start position"
-                               % [chess.square_name(s) for s in wrong])
+        rospy.sleep(1.0)                          # let the arm settle
+        start = occupancy(chess.Board())
+        for calibrate in (True, False):
+            occ = self.read_board(calibrate=calibrate)
+            wrong = differences(occ, start)
+            if wrong:
+                raise RuntimeError("squares %s do not look like the start position"
+                                   % [chess.square_name(s) for s in wrong])
         self.calibrated = True
 
     # ------------------------------------------------------------- my move
@@ -239,10 +245,16 @@ class ChessPlayer(object):
     def run(self):
         self.wait_for_services()
         while not rospy.is_shutdown():
-            try:
-                if not self.calibrated:
+            if not self.calibrated:
+                try:
                     self.calibrate()
                     self.say("ready - I play %s" % self.my_color)
+                except (RuntimeError, rospy.ServiceException) as exc:
+                    self.set_status(GameState.STATUS_CALIBRATING,
+                                    "calibrating: %s - retrying" % exc)
+                    rospy.sleep(2.0)
+                continue
+            try:
                 if self.board.is_game_over(claim_draw=True):
                     self.set_status(GameState.STATUS_GAME_OVER, "game over: %s" %
                                     self.board.result(claim_draw=True))
