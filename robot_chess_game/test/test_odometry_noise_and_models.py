@@ -65,3 +65,20 @@ def test_piece_sdf_is_valid_xml(ptype):
     assert model.get("name") == "white_%s_x" % ptype
     assert model.find("static").text == "true"
     assert len(model.findall("link/visual")) == 5
+
+
+def test_turning_in_place_with_simulator_jitter_stays_local():
+    """A robot spinning on the spot (with 0.1 mm position jitter, as reported
+    by Gazebo) must not get centimetre-level position noise."""
+    import random
+    jitter = random.Random(1)
+    model = OdometryNoiseModel(seed=3)
+    model.reset((0.0, 0.0, 0.0))
+    yaw = 0.0
+    for _ in range(500):                        # 10 s at 50 Hz, 1 rad/s
+        yaw += 0.02
+        model.update((jitter.gauss(0, 1e-4), jitter.gauss(0, 1e-4),
+                      math.atan2(math.sin(yaw), math.cos(yaw))))
+    x, y, t = model.pose
+    assert math.hypot(x, y) < 0.04
+    assert abs(math.atan2(math.sin(t - yaw), math.cos(t - yaw))) < 0.5

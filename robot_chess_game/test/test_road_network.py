@@ -99,3 +99,15 @@ def test_unknown_label_rejected():
     _, net = network()
     with pytest.raises(ValueError):
         net.approaches("z9")
+
+
+def test_robot_between_nodes_stays_on_its_lane():
+    """Off-node and slightly off-lane starts are projected onto the lane:
+    the route never cuts diagonally through a square."""
+    g, net = network()
+    for start in [(0.0, 2.0), (0.19, 2.22), (0.05, 1.3), (-0.07, 2.1)]:
+        waypoints, _, _ = net.plan(start, net.approaches("e5"))
+        for a, b in zip(waypoints, waypoints[1:]):
+            assert abs(a[0] - b[0]) < 1e-6 or abs(a[1] - b[1]) < 1e-6, (start, waypoints)
+        entry = waypoints[0]
+        assert math.hypot(entry[0] - start[0], entry[1] - start[1]) <= 0.25

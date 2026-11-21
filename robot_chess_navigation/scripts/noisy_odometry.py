@@ -28,7 +28,7 @@ class NoisyOdometry(object):
             alpha1=rospy.get_param("~alpha1", 0.002),
             alpha2=rospy.get_param("~alpha2", 0.001),
             alpha3=rospy.get_param("~alpha3", 0.002),
-            alpha4=rospy.get_param("~alpha4", 0.001),
+            alpha4=rospy.get_param("~alpha4", 0.00001),
             seed=rospy.get_param("~seed", None))
         self.odom_frame = rospy.get_param("~odom_frame", "odom")
         self.base_frame = rospy.get_param("~base_frame", "base_footprint")

@@ -1,20 +1,27 @@
 """Noisy odometry motion model.
 
 Gazebo's drive plugin reports a perfect odometry.  To work with a realistic
-robot we corrupt it with the odometry motion model of Thrun, Burgard & Fox
-("Probabilistic Robotics", ch. 5.4): every motion increment is split into
-rotation-1, translation, rotation-2 and each part gets zero-mean Gaussian
-noise.
+robot we corrupt it with an odometry motion model (Thrun, Burgard & Fox,
+"Probabilistic Robotics", ch. 5.4).  Every motion increment between two
+ground-truth poses is expressed in the robot frame as
 
-The book uses variances proportional to the *squared* increments, which
-makes the accumulated error depend on the update rate (at 50 Hz the
-increments are tiny and the noise almost vanishes).  We use variances
-proportional to the *absolute* increments instead, so the error grows like a
-random walk with travelled distance / rotation, independent of the rate:
+    trans = forward displacement   (signed, projection on the old heading)
+    rot   = change of heading
 
-    var(rot1)  = a1 * |rot1|  + a2 * |trans|
-    var(trans) = a3 * |trans| + a4 * (|rot1| + |rot2|)
-    var(rot2)  = a1 * |rot2|  + a2 * |trans|
+which is exactly what a differential drive's wheel encoders measure.  Both
+parts get zero-mean Gaussian noise and the noisy increment is integrated
+(midpoint rule) into the reported pose:
+
+    var(rot)   = a1 * |rot|   + a2 * |trans|
+    var(trans) = a3 * |trans| + a4 * |rot|
+
+Two deliberate differences to the textbook (rot1, trans, rot2) form:
+  * the variances are proportional to the *absolute* increments (not their
+    squares), so the error grows like a random walk with travelled distance
+    and rotation and does not depend on the update rate;
+  * no "rotation towards the direction of motion" is computed: for a robot
+    turning in place that angle is undefined and the tiny translational
+    jitter of the simulator would turn it into huge spurious noise.
 """
 import math
 import random
@@ -26,7 +33,7 @@ def _wrap(a):
 
 class OdometryNoiseModel(object):
 
-    def __init__(self, alpha1=0.002, alpha2=0.001, alpha3=0.002, alpha4=0.001,
+    def __init__(self, alpha1=0.002, alpha2=0.001, alpha3=0.002, alpha4=0.00001,
                  seed=None):
         self.alpha = (float(alpha1), float(alpha2), float(alpha3), float(alpha4))
         self.rng = random.Random(seed)
@@ -53,25 +60,17 @@ class OdometryNoiseModel(object):
         x1, y1, t1 = true_pose
         self.prev_true = tuple(true_pose)
 
-        trans = math.hypot(x1 - x0, y1 - y0)
-        if trans < 1e-6:
-            rot1 = 0.0
-        else:
-            rot1 = _wrap(math.atan2(y1 - y0, x1 - x0) - t0)
-            # Driving backwards: express as a negative translation.
-            if abs(rot1) > math.pi / 2.0:
-                rot1 = _wrap(rot1 - math.pi)
-                trans = -trans
-        rot2 = _wrap(t1 - t0 - rot1)
+        trans = (x1 - x0) * math.cos(t0) + (y1 - y0) * math.sin(t0)
+        rot = _wrap(t1 - t0)
 
         a1, a2, a3, a4 = self.alpha
-        n_rot1 = rot1 - self._sample(a1 * abs(rot1) + a2 * abs(trans))
-        n_trans = trans - self._sample(a3 * abs(trans) + a4 * (abs(rot1) + abs(rot2)))
-        n_rot2 = rot2 - self._sample(a1 * abs(rot2) + a2 * abs(trans))
+        n_rot = rot + self._sample(a1 * abs(rot) + a2 * abs(trans))
+        n_trans = trans + self._sample(a3 * abs(trans) + a4 * abs(rot))
 
         x, y, t = self.pose
-        x += n_trans * math.cos(t + n_rot1)
-        y += n_trans * math.sin(t + n_rot1)
-        t = _wrap(t + n_rot1 + n_rot2)
+        mid = t + n_rot / 2.0
+        x += n_trans * math.cos(mid)
+        y += n_trans * math.sin(mid)
+        t = _wrap(t + n_rot)
         self.pose = (x, y, t)
-        return self.pose, (n_trans, n_rot1 + n_rot2)
+        return self.pose, (n_trans, n_rot)

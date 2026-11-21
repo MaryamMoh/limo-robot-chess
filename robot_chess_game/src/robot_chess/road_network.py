@@ -133,10 +133,32 @@ class RoadNetwork(object):
     def nearest_node(self, bx, by):
         return min(self.adj, key=lambda n: math.hypot(n[0] - bx, n[1] - by))
 
-    def _dijkstra(self, start):
-        dist = {start: 0.0}
+    def nearest_edge_point(self, bx, by):
+        """Closest point on any road segment: (point, [(node, offset), ...])."""
+        best = None
+        for a, nbs in self.adj.items():
+            for b in nbs:
+                if a > b:
+                    continue                            # each edge once
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                t = ((bx - a[0]) * dx + (by - a[1]) * dy) / (dx * dx + dy * dy)
+                t = max(0.0, min(1.0, t))
+                px, py = a[0] + t * dx, a[1] + t * dy
+                d = math.hypot(bx - px, by - py)
+                if best is None or d < best[0]:
+                    length = math.hypot(dx, dy)
+                    best = (d, (px, py), [(a, t * length), (b, (1.0 - t) * length)])
+        return best[1], best[2]
+
+    def _dijkstra(self, sources):
+        """Multi-source Dijkstra; sources = [(node, initial_cost), ...]."""
+        dist = {}
         prev = {}
-        heap = [(0.0, start)]
+        heap = []
+        for node, cost in sources:
+            if cost < dist.get(node, float("inf")):
+                dist[node] = cost
+                heapq.heappush(heap, (cost, node))
         while heap:
             d, node = heapq.heappop(heap)
             if d > dist[node]:
@@ -150,9 +172,9 @@ class RoadNetwork(object):
         return dist, prev
 
     @staticmethod
-    def _path(prev, start, goal):
+    def _path(prev, goal):
         path = [goal]
-        while path[-1] != start:
+        while path[-1] in prev:
             path.append(prev[path[-1]])
         return path[::-1]
 
@@ -173,12 +195,14 @@ class RoadNetwork(object):
         """Shortest route from the robot to the best of several goals.
 
         goals_board: list of (node, yaw) in the board frame.
+        The robot is first projected onto the closest road segment, so it
+        never leaves the lanes even when it stands between two nodes.
         Returns (waypoints_map, final_yaw_map, length) with the simplified
-        list of map-frame waypoints (first = nearest network node).
+        list of map-frame waypoints (first = the projection point).
         """
         bx, by = self.g.map_to_board(*robot_xy_map)
-        start = self.nearest_node(bx, by)
-        dist, prev = self._dijkstra(start)
+        entry, sources = self.nearest_edge_point(bx, by)
+        dist, prev = self._dijkstra(sources)
         best = None
         for node, yaw in goals_board:
             if node in dist and (best is None or dist[node] < best[0]):
@@ -186,7 +210,7 @@ class RoadNetwork(object):
         if best is None:
             raise ValueError("no route to any goal")
         length, goal, yaw = best
-        path = self.simplify(self._path(prev, start, goal))
+        path = self.simplify([entry] + self._path(prev, goal))
         waypoints = [self.g.board_to_map(x, y) for x, y in path]
         return waypoints, self.g.board_yaw_to_map(yaw), length
 

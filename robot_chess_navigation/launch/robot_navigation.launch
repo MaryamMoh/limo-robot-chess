@@ -29,7 +29,7 @@
       <param name="alpha1" value="0.002"/>
       <param name="alpha2" value="0.001"/>
       <param name="alpha3" value="0.002"/>
-      <param name="alpha4" value="0.001"/>
+      <param name="alpha4" value="0.00001"/>
     </node>
 
     <node pkg="robot_localization" type="ekf_localization_node" name="ekf" output="screen">

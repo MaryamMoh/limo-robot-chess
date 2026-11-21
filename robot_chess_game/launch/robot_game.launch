@@ -14,6 +14,7 @@
     <node pkg="robot_chess_game" type="piece_vision.py" name="piece_vision" output="screen">
       <remap from="image" to="$(arg image_topic)"/>
       <param name="frames" value="5"/>
+      <param name="timeout" value="15.0"/>
     </node>
 
     <node pkg="robot_chess_game" type="piece_mover.py" name="piece_mover" output="screen">
