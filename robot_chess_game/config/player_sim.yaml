@@ -1,0 +1,37 @@
+# My robot (LIMO + myCobot 280) in the Gazebo test setup.
+#
+# The board stands on a low table whose top (0.22 m) overhangs the LIMO's
+# front bumper, so the near rank is only 10 cm from the arm axis: with the
+# tool pointing down the myCobot 280 reaches 7..27 cm, which limits a board
+# seen from a fixed base to about 2 cm squares (a travel set).
+# Run `rosrun robot_chess_game check_reach.py <this file>` after changing it.
+board:
+  square_size: 0.02          # 8 x 2 cm = 16 cm board
+  board_x: 0.17              # board centre in base_footprint [m]
+  board_y: 0.0
+  board_z: 0.22              # playing surface height above the floor
+  board_yaw: -1.5708         # white: board +y (towards black) = robot forward
+  graveyard_x: 0.095         # captured pieces: 3 columns x 5 rows beside the h-file
+  graveyard_y: -0.07
+  graveyard_dx: 0.02
+  graveyard_dy: 0.02
+  graveyard_rows: 5
+  graveyard_slots: 15
+  grasp_height: 0.012        # TCP above the board when gripping a piece
+  travel_height: 0.06        # TCP above the board when moving between squares
+  observe_x: 0.0             # TCP position for looking at the board (board frame)
+  observe_y: -0.04
+  observe_height: 0.13
+
+player:
+  color: white
+  engine: internal           # internal | stockfish
+  think_time: 3.0            # seconds per move
+  max_depth: 5
+  stable_observations: 3     # identical readings needed to accept an opponent move
+  observe_period: 1.0        # seconds between board readings while waiting
+
+arm:
+  tcp_offset: 0.06           # flange -> point between the finger tips [m]
+  speed: 0.6                 # joint speed limit [rad/s]
+  cartesian_step: 0.01       # interpolation step for straight tool motions [m]

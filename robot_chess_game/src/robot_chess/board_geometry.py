@@ -1,130 +1,111 @@
-"""Metric geometry of the floor chessboard.
+"""Where the chessboard is, seen from the robot.
 
-Board frame: origin at the centre of the board, +x from the a-file towards
-the h-file, +y from rank 1 (white) towards rank 8 (black).  The board frame
-is placed in the map frame with (origin_x, origin_y, yaw), which makes it
-possible to use the same code for the simulated arena and for a board taped
-on the laboratory floor.
+Board frame: origin at the centre of the board, on the playing surface;
++x from the a-file to the h-file, +y from rank 1 to rank 8, +z up.
 
-Pieces always stand at square centres, the robots drive on the lanes
-between the squares (see road_network.py).
+The board pose is given in the robot's base_footprint frame
+(board_x, board_y, board_z, board_yaw).  For a robot playing white and
+facing the board, the board's +y (towards black) is the robot's forward
+direction, i.e. board_yaw = -pi/2; for black board_yaw = +pi/2.
+
+Captured opponent pieces are put on a grid of "graveyard" slots beside the
+board (also in board coordinates) that must be inside the arm's reach.
 """
 import math
 
 import chess
-
-
-def normalize_angle(a):
-    return math.atan2(math.sin(a), math.cos(a))
+import numpy as np
 
 
 class BoardGeometry(object):
 
-    PARAM_KEYS = ("square_size", "origin_x", "origin_y", "yaw", "piece_radius",
-                  "graveyard_offset", "graveyard_spacing", "graveyard_slots",
-                  "graveyard_approach", "ring_margin", "robot_length", "robot_width")
+    PARAM_KEYS = ("square_size", "board_x", "board_y", "board_z", "board_yaw",
+                  "graveyard_x", "graveyard_y", "graveyard_dx", "graveyard_dy",
+                  "graveyard_rows", "graveyard_slots", "grasp_height",
+                  "travel_height", "observe_x", "observe_y", "observe_height")
 
-    def __init__(self, square_size=0.8, origin_x=0.0, origin_y=0.0, yaw=0.0,
-                 piece_radius=0.09, graveyard_offset=4.7, graveyard_spacing=0.4,
-                 graveyard_slots=15, graveyard_approach=0.4, ring_margin=0.5,
-                 robot_length=0.32, robot_width=0.22):
+    def __init__(self, square_size=0.02, board_x=0.17, board_y=0.0, board_z=0.22,
+                 board_yaw=-math.pi / 2, graveyard_x=0.095, graveyard_y=-0.07,
+                 graveyard_dx=0.02, graveyard_dy=0.02, graveyard_rows=5,
+                 graveyard_slots=15, grasp_height=0.012, travel_height=0.06,
+                 observe_x=0.0, observe_y=-0.04, observe_height=0.13):
         self.square_size = float(square_size)
-        self.origin_x = float(origin_x)
-        self.origin_y = float(origin_y)
-        self.yaw = float(yaw)
-        self.piece_radius = float(piece_radius)
-        self.graveyard_offset = float(graveyard_offset)
-        self.graveyard_spacing = float(graveyard_spacing)
+        self.board_x = float(board_x)
+        self.board_y = float(board_y)
+        self.board_z = float(board_z)
+        self.board_yaw = float(board_yaw)
+        self.graveyard_x = float(graveyard_x)
+        self.graveyard_y = float(graveyard_y)
+        self.graveyard_dx = float(graveyard_dx)
+        self.graveyard_dy = float(graveyard_dy)
+        self.graveyard_rows = int(graveyard_rows)
         self.graveyard_slots = int(graveyard_slots)
-        self.graveyard_approach = float(graveyard_approach)
-        self.ring_margin = float(ring_margin)
-        self.robot_length = float(robot_length)
-        self.robot_width = float(robot_width)
+        self.grasp_height = float(grasp_height)
+        self.travel_height = float(travel_height)
+        self.observe_x = float(observe_x)
+        self.observe_y = float(observe_y)
+        self.observe_height = float(observe_height)
 
     @classmethod
     def from_dict(cls, params):
-        """Build from a (ROS parameter) dictionary; unknown keys are ignored."""
         return cls(**{k: params[k] for k in cls.PARAM_KEYS if k in params})
 
-    # ------------------------------------------------------------- checks
-    def robot_radius(self):
-        """Circumscribed radius of the rectangular robot footprint."""
-        return math.hypot(self.robot_length / 2.0, self.robot_width / 2.0)
+    # ----------------------------------------------------------- transforms
+    def board_to_robot_matrix(self):
+        """4x4 transform board frame -> base_footprint."""
+        c, s = math.cos(self.board_yaw), math.sin(self.board_yaw)
+        m = np.eye(4)
+        m[:2, :2] = [[c, -s], [s, c]]
+        m[:3, 3] = [self.board_x, self.board_y, self.board_z]
+        return m
 
-    def validate(self, min_clearance=0.03):
-        """Raise ValueError if the robot cannot drive/turn safely on the board.
+    def to_robot(self, bx, by, bz=0.0):
+        p = self.board_to_robot_matrix() @ np.array([bx, by, bz, 1.0])
+        return p[:3]
 
-        Checked clearances (robot circle or half width vs. piece surface):
-          * turning in place on a square-side midpoint (the approach point),
-            between the two pieces it separates;
-          * driving along a lane;
-          * turning on the ring road next to the outer pieces;
-          * turning at a graveyard approach point next to the neighbour slots.
-        """
-        r, p = self.robot_radius(), self.piece_radius
-        s2 = self.square_size / 2.0
-        checks = {
-            "turn at a square-side midpoint": s2 - p - r,
-            "drive along a lane": s2 - p - self.robot_width / 2.0,
-            "turn on the ring road": self.ring_margin + s2 - p - r,
-            "turn at a graveyard slot": math.hypot(self.graveyard_spacing,
-                                                   self.graveyard_approach) - p - r,
-            "graveyard outside the ring road":
-                self.graveyard_offset - self.graveyard_approach
-                - (self.board_half_size() + self.ring_margin) - 0.2,
-            "graveyard slots beside the board":
-                self.board_half_size() + self.ring_margin
-                - (self.graveyard_slots - 1) / 2.0 * self.graveyard_spacing - 0.2,
-        }
-        bad = ["%s (%.3f m)" % (k, v) for k, v in checks.items() if v < min_clearance]
-        if bad:
-            raise ValueError("board geometry too tight: " + ", ".join(bad))
-        return checks
-
-    # ------------------------------------------------------------------ frames
-    def board_to_map(self, bx, by):
-        c, s = math.cos(self.yaw), math.sin(self.yaw)
-        return (self.origin_x + c * bx - s * by, self.origin_y + s * bx + c * by)
-
-    def map_to_board(self, mx, my):
-        dx, dy = mx - self.origin_x, my - self.origin_y
-        c, s = math.cos(self.yaw), math.sin(self.yaw)
-        return (c * dx + s * dy, -s * dx + c * dy)
-
-    def board_yaw_to_map(self, yaw):
-        return normalize_angle(yaw + self.yaw)
-
-    # ----------------------------------------------------------------- squares
+    # --------------------------------------------------------------- squares
     def square_center_board(self, square):
         if isinstance(square, str):
             square = chess.parse_square(square)
         f, r = chess.square_file(square), chess.square_rank(square)
         return ((f - 3.5) * self.square_size, (r - 3.5) * self.square_size)
 
-    def square_center(self, square):
-        """Centre of a square in the map frame."""
-        return self.board_to_map(*self.square_center_board(square))
-
-    def square_at(self, mx, my):
-        """Square name under a map point, or None when off the board."""
-        bx, by = self.map_to_board(mx, my)
+    def square_at_board(self, bx, by):
         f = int(math.floor(bx / self.square_size + 4.0))
         r = int(math.floor(by / self.square_size + 4.0))
         if 0 <= f < 8 and 0 <= r < 8:
-            return chess.square_name(chess.square(f, r))
+            return chess.square(f, r)
         return None
 
-    def board_half_size(self):
-        return 4.0 * self.square_size
-
-    # --------------------------------------------------------------- graveyard
-    def graveyard_slot_board(self, color, index):
-        """Captured white pieces are stored left of the board (a-file side),
-        captured black pieces right of it (h-file side)."""
+    def graveyard_slot_board(self, index):
         index = max(0, min(int(index), self.graveyard_slots - 1))
-        x = -self.graveyard_offset if color == "white" else self.graveyard_offset
-        y = (index - (self.graveyard_slots - 1) / 2.0) * self.graveyard_spacing
-        return (x, y)
+        col, row = divmod(index, self.graveyard_rows)
+        return (self.graveyard_x + col * self.graveyard_dx,
+                self.graveyard_y + row * self.graveyard_dy)
 
-    def graveyard_slot(self, color, index):
-        return self.board_to_map(*self.graveyard_slot_board(color, index))
+    def location_board(self, label):
+        """Board-frame (x, y) of a square name or "graveyard-<n>"."""
+        if label.startswith("graveyard-"):
+            return self.graveyard_slot_board(int(label.split("-")[1]))
+        return self.square_center_board(label)
+
+    # ------------------------------------------------------- arm targets
+    def grasp_point(self, label):
+        """TCP target (base_footprint) for grasping/releasing at a location."""
+        bx, by = self.location_board(label)
+        return self.to_robot(bx, by, self.grasp_height)
+
+    def travel_point(self, label):
+        bx, by = self.location_board(label)
+        return self.to_robot(bx, by, self.travel_height)
+
+    def observe_point(self):
+        """TCP position (tool pointing down) from which the wide-angle wrist
+        camera sees the whole board and the graveyard.  It is slightly on the
+        robot's side of the board centre: the arm cannot hold the camera high
+        enough above the centre itself."""
+        return self.to_robot(self.observe_x, self.observe_y, self.observe_height)
+
+    def all_labels(self):
+        return ([chess.square_name(s) for s in chess.SQUARES] +
+                ["graveyard-%d" % i for i in range(self.graveyard_slots)])

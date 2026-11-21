@@ -1,10 +1,4 @@
-"""Piece naming, colours and the colour code used for visual identification.
-
-Every physical piece carries a coloured band at the height of the LIMO
-camera.  The band colour encodes the piece type, the body colour (white /
-black) encodes the side.  The same table is used to build the Gazebo
-models and to classify camera images, so simulation and vision always agree.
-"""
+"""Piece names, colours and dimensions."""
 import chess
 
 COLORS = ("white", "black")
@@ -20,44 +14,20 @@ PIECE_TYPE_NAME = {
 }
 PIECE_TYPE_FROM_NAME = {v: k for k, v in PIECE_TYPE_NAME.items()}
 
-# Band colour (RGB 0..1) per piece type.  The hues are 60 degrees apart so
-# they are easy to separate in HSV space.
-BAND_RGB = {
-    "rook": (0.85, 0.08, 0.08),     # red      hue   0
-    "bishop": (0.85, 0.85, 0.08),   # yellow   hue  60
-    "pawn": (0.08, 0.75, 0.08),     # green    hue 120
-    "king": (0.08, 0.80, 0.80),     # cyan     hue 180
-    "knight": (0.08, 0.08, 0.85),   # blue     hue 240
-    "queen": (0.80, 0.08, 0.80),    # magenta  hue 300
-}
-
-# OpenCV hue (0..179) of every band colour.
-BAND_HUE_CV = {
-    "rook": 0,
-    "bishop": 30,
-    "pawn": 60,
-    "king": 90,
-    "knight": 120,
-    "queen": 150,
-}
-
 BODY_RGB = {
-    "white": (0.92, 0.92, 0.90),
-    "black": (0.10, 0.10, 0.10),
+    "white": (0.93, 0.92, 0.86),
+    "black": (0.12, 0.10, 0.10),
 }
 
-# Physical dimensions [m].
-PIECE_RADIUS = 0.09
-BASE_HEIGHT = 0.04
-BAND_BOTTOM = 0.12
-BAND_TOP = 0.24
+# Simulated pieces (a small travel set) [m].
+PIECE_RADIUS = 0.0065
 PIECE_HEIGHT = {
-    "pawn": 0.32,
-    "rook": 0.36,
-    "knight": 0.38,
-    "bishop": 0.40,
-    "queen": 0.44,
-    "king": 0.48,
+    "pawn": 0.018,
+    "rook": 0.020,
+    "knight": 0.022,
+    "bishop": 0.024,
+    "queen": 0.027,
+    "king": 0.030,
 }
 
 
@@ -66,21 +36,17 @@ def color_name(chess_color):
     return "white" if chess_color == chess.WHITE else "black"
 
 
+def chess_color(name):
+    return chess.WHITE if name == "white" else chess.BLACK
+
+
 def opposite(color):
     return "black" if color == "white" else "white"
 
 
 def initial_model_name(color, piece_type, square_name):
-    """Stable name of a piece in the starting position, e.g. white_knight_g.
-
-    The file of the start square makes the name unique (two knights, two
-    rooks, eight pawns ...).
-    """
+    """Stable Gazebo name of a piece of the start position, e.g. white_knight_g."""
     return "%s_%s_%s" % (color, piece_type, square_name[0])
-
-
-def promoted_model_name(color, piece_type, index):
-    return "%s_%s_promoted_%d" % (color, piece_type, index)
 
 
 def initial_square_models(board=None):
