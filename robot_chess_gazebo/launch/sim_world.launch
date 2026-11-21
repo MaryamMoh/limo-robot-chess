@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo test bench: table + board + 32 pieces, my LIMO + myCobot with
+  position controllers, and (optionally) the opponent stand-in.
+-->
+<launch>
+  <arg name="gui" default="true"/>
+  <arg name="config" default="$(find robot_chess_game)/config/player_sim.yaml"/>
+  <arg name="world" default="$(find robot_chess_gazebo)/worlds/chess_table.world"/>
+  <arg name="opponent" default="true"/>
+  <arg name="opponent_color" default="black"/>
+  <arg name="opponent_strategy" default="engine"/>
+  <arg name="tcp_offset" default="0.06"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+  </include>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find robot_chess_description)/urdf/limo_mycobot.urdf.xacro' tcp_offset:=$(arg tcp_offset)"/>
+
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_robot" output="screen"
+        args="-urdf -param robot_description -model limo -x 0 -y 0 -z 0.001
+              -J joint2_to_joint1 0 -J joint3_to_joint2 0 -J joint4_to_joint3 0
+              -J joint5_to_joint4 0 -J joint6_to_joint5 0 -J joint6output_to_joint6 0"/>
+
+  <rosparam command="load" file="$(find robot_chess_description)/config/controllers.yaml"/>
+  <node pkg="controller_manager" type="spawner" name="controller_spawner" output="screen"
+        args="joint_state_controller arm_controller gripper_controller"/>
+
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
+    <param name="publish_frequency" value="50.0"/>
+  </node>
+
+  <node pkg="robot_chess_gazebo" type="sim_piece_manager.py" name="chess_sim" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="robot_model" value="limo"/>
+    <param name="tcp_offset" value="$(arg tcp_offset)"/>
+  </node>
+
+  <node if="$(arg opponent)" pkg="robot_chess_gazebo" type="opponent_simulator.py"
+        name="opponent_simulator" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="color" value="$(arg opponent_color)"/>
+    <param name="strategy" value="$(arg opponent_strategy)"/>
+  </node>
+</launch>

@@ -6,7 +6,8 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/sim_piece_manager.py
-  scripts/generate_arena.py
+  scripts/opponent_simulator.py
+  scripts/generate_world.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(DIRECTORY launch worlds
