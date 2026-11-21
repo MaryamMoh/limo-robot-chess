@@ -6,8 +6,9 @@
   the meshes are taken from that package.  Differences:
     * every link / TF frame carries the robot name as prefix ("white/base_link")
     * every Gazebo plugin publishes inside the robot namespace (/white/scan ...)
-    * the drive plugin publishes ground-truth odometry on odom_ground_truth and
-      does NOT broadcast TF; the noisy odometry + EKF chain does that instead
+    * a kinematic drive plugin publishes ground-truth odometry on
+      odom_ground_truth (separate TF tree); the noisy odometry + EKF chain
+      provides the robot's odom -> base_footprint transform
     * Gaussian noise on LiDAR, camera and IMU
     * a carrying plate on top, where transported chess pieces are placed
 
@@ -167,8 +168,8 @@
       <axis xyz="0 ${reflect} 0"/>
     </joint>
     <gazebo reference="${p}/${name}_wheel_link">
-      <mu1>10</mu1>
-      <mu2>10</mu2>
+      <mu1>0.1</mu1>
+      <mu2>0.1</mu2>
       <kp>10000000.0</kp>
       <kd>1.0</kd>
       <minDepth>0.01</minDepth>
@@ -196,24 +197,20 @@
   </gazebo>
 
   <gazebo>
-    <plugin name="skid_steer_drive" filename="libgazebo_ros_skid_steer_drive.so">
-      <updateRate>50.0</updateRate>
+    <!-- Kinematic drive: the chassis follows cmd_vel exactly (in-place
+         rotation of the four-wheel differential LIMO is unreliable in ODE).
+         Its odometry is ground truth and lives in its own TF tree
+         (odom_ground_truth -> base_footprint_ground_truth), so it never
+         conflicts with the EKF; noisy_odometry.py turns it into realistic
+         wheel odometry. -->
+    <plugin name="planar_drive" filename="libgazebo_ros_planar_move.so">
       <robotNamespace>/${p}</robotNamespace>
-      <leftFrontJoint>front_left_wheel</leftFrontJoint>
-      <rightFrontJoint>front_right_wheel</rightFrontJoint>
-      <leftRearJoint>rear_left_wheel</leftRearJoint>
-      <rightRearJoint>rear_right_wheel</rightRearJoint>
-      <wheelSeparation>0.172</wheelSeparation>
-      <wheelDiameter>0.09</wheelDiameter>
-      <robotBaseFrame>${p}/base_footprint</robotBaseFrame>
       <commandTopic>cmd_vel</commandTopic>
-      <torque>50</torque>
-      <broadcastTF>false</broadcastTF>
       <odometryTopic>odom_ground_truth</odometryTopic>
-      <odometryFrame>${p}/odom</odometryFrame>
-      <covariance_x>0.0001</covariance_x>
-      <covariance_y>0.0001</covariance_y>
-      <covariance_yaw>0.01</covariance_yaw>
+      <odometryFrame>${p}/odom_ground_truth</odometryFrame>
+      <robotBaseFrame>${p}/base_footprint_ground_truth</robotBaseFrame>
+      <odometryRate>50.0</odometryRate>
+      <cmdTimeout>1.0</cmdTimeout>
     </plugin>
     <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
       <robotNamespace>/${p}</robotNamespace>
