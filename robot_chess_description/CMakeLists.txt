@@ -4,5 +4,5 @@ project(robot_chess_description)
 find_package(catkin REQUIRED)
 catkin_package()
 
-install(DIRECTORY urdf
+install(DIRECTORY urdf config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
