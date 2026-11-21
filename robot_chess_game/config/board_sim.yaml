@@ -1,0 +1,19 @@
+# Floor chessboard used in the Gazebo arena (see generate_arena.py).
+# All lengths in metres, board frame = map frame in simulation.
+board:
+  square_size: 0.7            # 8 x 0.7 = 5.6 m board
+  origin_x: 0.0               # board centre in the map frame
+  origin_y: 0.0
+  yaw: 0.0                    # rotation of the board frame in the map frame
+  graveyard_offset: 4.5       # captured pieces stand at x = -/+ 4.5 (white / black)
+  graveyard_spacing: 0.35
+  graveyard_slots: 15
+  workspace_half_extent: 4.8  # robots never plan approach poses outside this square
+  orthogonal_approach: 0.42   # robot centre -> piece centre when facing a square edge
+  robot_radius: 0.20          # circumscribed radius of the LIMO footprint
+  clearance_margin: 0.05
+
+# Where the robots wait while the opponent is moving (board frame).
+home:
+  white: {x: 0.0, y: -3.9, yaw: 1.5708}
+  black: {x: 0.0, y: 3.9, yaw: -1.5708}

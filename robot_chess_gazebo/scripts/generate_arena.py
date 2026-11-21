@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Generate the chess arena: Gazebo world + matching occupancy grid map.
+
+World and map are produced from the same geometry description, so the map
+used by AMCL matches the simulated walls exactly.
+
+    generate_arena.py [--board-config FILE] [--world OUT.world] [--map OUT_PREFIX]
+
+The chessboard itself (64 tiles, border, graveyard and home pads) is drawn
+as visual-only geometry: robots drive over it.  Walls and the corner
+landmarks (which break the symmetry of the square arena so AMCL cannot
+confuse the corners) are solid and appear in the map.  The pieces are not
+part of the world - they are spawned at runtime by sim_piece_manager.py.
+"""
+import argparse
+import math
+import os
+import sys
+
+import yaml
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(REPO, "robot_chess_game", "src"))
+
+from robot_chess.board_geometry import BoardGeometry  # noqa: E402
+
+ARENA_HALF = 5.5          # inner half size of the walled arena [m]
+WALL_THICKNESS = 0.15
+WALL_HEIGHT = 0.6
+MAP_RESOLUTION = 0.05
+MAP_MARGIN = 0.5
+
+LIGHT_SQUARE = (0.86, 0.85, 0.80)
+DARK_SQUARE = (0.30, 0.30, 0.33)
+BORDER = (0.45, 0.45, 0.45)
+PAD = (0.62, 0.62, 0.66)
+
+
+def obstacles():
+    """Solid obstacles as ("box", x, y, yaw, sx, sy) / ("cyl", x, y, r)."""
+    h = ARENA_HALF + WALL_THICKNESS / 2.0
+    length = 2 * ARENA_HALF + 2 * WALL_THICKNESS
+    shapes = [
+        ("box", 0.0, h, 0.0, length, WALL_THICKNESS),
+        ("box", 0.0, -h, 0.0, length, WALL_THICKNESS),
+        ("box", h, 0.0, 0.0, WALL_THICKNESS, length),
+        ("box", -h, 0.0, 0.0, WALL_THICKNESS, length),
+        # Corner landmarks - all different so the arena is not symmetric.
+        ("box", -5.0, -5.05, 0.0, 0.8, 0.5),
+        ("cyl", 4.95, 4.95, 0.3),
+        ("cyl", -5.15, 4.6, 0.12),
+        ("cyl", -4.6, 5.15, 0.12),
+        ("box", 5.05, -5.05, math.pi / 4, 0.5, 0.5),
+        # Short wall stubs on the long sides, away from the corridors.
+        ("box", -5.3, 0.0, 0.0, 0.4, 1.2),
+        ("box", 1.8, 5.3, 0.0, 1.0, 0.4),
+    ]
+    return shapes
+
+
+# --------------------------------------------------------------------- world
+def _material(rgb):
+    r, g, b = rgb
+    return ("<material><ambient>{0} {1} {2} 1</ambient><diffuse>{0} {1} {2} 1</diffuse>"
+            "<specular>0.05 0.05 0.05 1</specular></material>").format(r, g, b)
+
+
+def _visual_tile(name, x, y, yaw, sx, sy, z, rgb):
+    return ("<visual name='{n}'><pose>{x:.4f} {y:.4f} {z:.4f} 0 0 {yaw:.4f}</pose>"
+            "<geometry><box><size>{sx:.4f} {sy:.4f} 0.002</size></box></geometry>{m}"
+            "</visual>").format(n=name, x=x, y=y, z=z, yaw=yaw, sx=sx, sy=sy,
+                                m=_material(rgb))
+
+
+def board_model(g):
+    s = g.square_size
+    visuals = []
+    half = g.board_half_size()
+    # Border frame below the squares
+    visuals.append(_visual_tile("border", 0, 0, 0, 2 * half + 0.2, 2 * half + 0.2,
+                                0.0008, BORDER))
+    for f in range(8):
+        for r in range(8):
+            bx, by = (f - 3.5) * s, (r - 3.5) * s
+            light = (f + r) % 2 == 1
+            visuals.append(_visual_tile("sq_%d_%d" % (f, r), bx, by, 0, s, s, 0.0018,
+                                        LIGHT_SQUARE if light else DARK_SQUARE))
+    for color in ("white", "black"):
+        for i in range(g.graveyard_slots):
+            bx, by = g.graveyard_slot_board(color, i)
+            visuals.append(_visual_tile("grave_%s_%d" % (color, i), bx, by, 0,
+                                        0.28, 0.28, 0.0012, PAD))
+    for name, by in (("home_white", -(half + 1.1)), ("home_black", half + 1.1)):
+        visuals.append(_visual_tile(name, 0, by, 0, 0.5, 0.4, 0.0012, PAD))
+    return ("<model name='chessboard'><static>true</static>"
+            "<pose>{x} {y} 0 0 0 {yaw}</pose><link name='link'>{v}</link></model>").format(
+                x=g.origin_x, y=g.origin_y, yaw=g.yaw, v="".join(visuals))
+
+
+def obstacle_model(shapes):
+    parts = []
+    for i, shp in enumerate(shapes):
+        if shp[0] == "box":
+            _, x, y, yaw, sx, sy = shp
+            geom = "<box><size>%.3f %.3f %.3f</size></box>" % (sx, sy, WALL_HEIGHT)
+        else:
+            _, x, y, rad = shp
+            yaw = 0.0
+            geom = "<cylinder><radius>%.3f</radius><length>%.3f</length></cylinder>" % (
+                rad, WALL_HEIGHT)
+        pose = "<pose>%.3f %.3f %.3f 0 0 %.4f</pose>" % (x, y, WALL_HEIGHT / 2.0, yaw)
+        parts.append("<collision name='c%d'>%s<geometry>%s</geometry></collision>"
+                     "<visual name='v%d'>%s<geometry>%s</geometry>%s</visual>" % (
+                         i, pose, geom, i, pose, geom, _material((0.7, 0.68, 0.62))))
+    return ("<model name='arena_walls'><static>true</static><link name='link'>%s"
+            "</link></model>" % "".join(parts))
+
+
+def world_sdf(g, shapes):
+    return """<?xml version="1.0"?>
+<!-- Generated by robot_chess_gazebo/scripts/generate_arena.py - do not edit. -->
+<sdf version="1.6">
+  <world name="chess_arena">
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://ground_plane</uri></include>
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.8 0.9 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <physics type="ode">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
+    <gui>
+      <camera name="user_camera">
+        <pose>0 -11 11 0 0.8 1.5708</pose>
+      </camera>
+    </gui>
+    %s
+    %s
+  </world>
+</sdf>
+""" % (board_model(g), obstacle_model(shapes))
+
+
+# ----------------------------------------------------------------------- map
+def _inside(shape, px, py, pad):
+    if shape[0] == "box":
+        _, x, y, yaw, sx, sy = shape
+        dx, dy = px - x, py - y
+        c, s = math.cos(-yaw), math.sin(-yaw)
+        lx, ly = c * dx - s * dy, s * dx + c * dy
+        return abs(lx) <= sx / 2.0 + pad and abs(ly) <= sy / 2.0 + pad
+    _, x, y, r = shape
+    return math.hypot(px - x, py - y) <= r + pad
+
+
+def write_map(prefix, shapes):
+    extent = ARENA_HALF + WALL_THICKNESS + MAP_MARGIN
+    n = int(round(2 * extent / MAP_RESOLUTION))
+    origin = -extent
+    pad = MAP_RESOLUTION / 2.0
+    rows = []
+    for row in range(n):
+        y = origin + (n - row - 0.5) * MAP_RESOLUTION      # top row = max y
+        line = bytearray()
+        for col in range(n):
+            x = origin + (col + 0.5) * MAP_RESOLUTION
+            outside = max(abs(x), abs(y)) > ARENA_HALF + WALL_THICKNESS
+            occupied = any(_inside(s, x, y, pad) for s in shapes)
+            line.append(0 if occupied else (205 if outside else 254))
+        rows.append(bytes(line))
+    with open(prefix + ".pgm", "wb") as f:
+        f.write(b"P5\n# chess arena\n%d %d\n255\n" % (n, n))
+        for line in rows:
+            f.write(line)
+    with open(prefix + ".yaml", "w") as f:
+        f.write("image: %s.pgm\nresolution: %.3f\norigin: [%.3f, %.3f, 0.0]\n"
+                "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n" % (
+                    os.path.basename(prefix), MAP_RESOLUTION, origin, origin))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--board-config", default=os.path.join(
+        REPO, "robot_chess_game", "config", "board_sim.yaml"))
+    ap.add_argument("--world", default=os.path.join(
+        REPO, "robot_chess_gazebo", "worlds", "chess_arena.world"))
+    ap.add_argument("--map", default=os.path.join(
+        REPO, "robot_chess_navigation", "maps", "chess_arena"))
+    args = ap.parse_args()
+
+    with open(args.board_config) as f:
+        g = BoardGeometry.from_dict(yaml.safe_load(f)["board"])
+    shapes = obstacles()
+    for path in (args.world, args.map):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(args.world, "w") as f:
+        f.write(world_sdf(g, shapes))
+    write_map(args.map, shapes)
+    print("wrote %s and %s.{pgm,yaml}" % (args.world, args.map))
+
+
+if __name__ == "__main__":
+    main()
