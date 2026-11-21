@@ -1,314 +1,284 @@
-# System Design: LIMO Robot Chess
+# System Design: Chess-Playing LIMO + myCobot
 
-## 1. Goal
+## 1. Setting
 
-Two AgileX LIMO PRO robots play a game of chess on a floor chessboard. Each
-robot belongs to one human player:
+Two robots play chess against each other on a real board. Each is a LIMO with
+a myCobot 280 arm, programmed by a different person. This repository is one
+of the players. Nothing is shared between the two robots except the board,
+so my robot must:
 
-- the human chooses the move;
-- the robot executes it physically, fully autonomously: it plans a route,
-  drives, localises, verifies the piece with its camera, and carries it.
+1. know the rules and the state of the game;
+2. see what the opponent did;
+3. decide on a good move;
+4. physically make that move without disturbing the other pieces.
 
-The system is developed and tested in Gazebo/RViz with two robots, and deployed
-on a single real LIMO PRO in the laboratory.
+It is developed and tested in Gazebo, where a stand-in plays the opponent's
+side, and then deployed on the real robot in the laboratory.
 
-## 2. Hardware and software platform
+## 2. Hardware
 
 | Item | Used for |
 |---|---|
-| AgileX LIMO PRO, four-wheel differential mode | mobile base, turning in place, ≤ 0.3 m/s |
-| NVIDIA Orin Nano | runs the robot's nodes |
-| EAI T-mini Pro LiDAR (`/scan`) | AMCL localisation, safety stop |
-| Orbbec Dabai depth camera (colour stream) | piece verification |
-| IMU (`/imu`) | yaw rate for the EKF |
-| Wheel odometry (`/odom`, `limo_base`) | EKF input |
-| Ubuntu 20.04, ROS Noetic, Gazebo 11 | as on the LIMO PRO image |
-
-The simulated robot (`robot_chess_description/urdf/limo_pro.urdf.xacro`)
-reuses the geometry, masses, sensor placement and meshes of AgileX's
-`limo_description`. Every frame and topic is prefixed with the robot name so
-several robots can share one Gazebo world. All sensors are noisy:
-
-- LiDAR: σ = 1.5 cm
-- camera: σ = 0.01
-- IMU: σ = 0.005
-
-The chassis is moved by Gazebo's kinematic planar drive. The upstream
-skid-steer plugin could not turn the four-wheel model in place: it measured
-0.05 rad for a 1 rad command. Realistic motion errors are added by the
-odometry noise model (4.4).
+| AgileX LIMO | mobile base carrying the arm; optionally drives between base stations |
+| myCobot 280, 6 DOF | moves the pieces; kinematics from AgileX's `limo_cobot_sim` model |
+| parallel gripper | grasps pieces from above |
+| wide-angle wrist camera (USB, 640×480) | reads the board |
+| Jetson (LIMO) | runs all nodes; `pymycobot` talks to the arm over `/dev/ttyTHS1` |
 
 ## 3. Architecture
 
 ![architecture](architecture.svg)
 
-| Node | Package | Role |
-|---|---|---|
-| `chess_referee` | game | chess rules, turn order, move decomposition, dispatch to robots, game state |
-| `player_console` (×2) | game | one terminal per human player |
-| `board_visualizer` | game | logical board as RViz markers |
-| `piece_mover` (per robot) | game | `execute_move` action server: route planning, driving, pick/place sequence |
-| `piece_vision` (per robot) | game | `verify_piece` service: camera-based piece identification |
-| `chess_carrier` | gazebo / game | sim: spawns pieces and carries them; real: asks an assistant |
-| `noisy_odometry` (per robot, sim) | navigation | odometry motion model |
-| `ekf` (per robot) | navigation | `robot_localization`: odometry + IMU fusion |
-| `amcl` (per robot) | navigation | LiDAR localisation on the known map |
-| `map_server` | navigation | known map of the arena / laboratory |
+| Node | Role |
+|---|---|
+| `chess_player` | game state, engine, turn logic, opponent move recognition, verification |
+| `board_vision` | `observe_board` service: board occupancy from the wrist camera |
+| `arm_executor` | `execute_move` action: pick and place with the arm; observe pose; base stations |
+| `mycobot_driver` (real) | real arm behind `FollowJointTrajectory` interfaces + `joint_states` |
+| ros_control controllers (sim) | the same interfaces in Gazebo |
+| `board_visualizer`, `chess_monitor` | RViz markers and a terminal view of the game |
+| `chess_sim` (sim) | spawns pieces, virtual grasp, ground-truth occupancy |
+| `opponent_simulator` (sim) | plays the other side by looking only at the board |
 
-### Main interfaces (`robot_chess_msgs`)
+The core algorithms are in a ROS-independent Python package
+(`robot_chess_game/src/robot_chess`), so they can be unit-tested without ROS:
 
-- `SubmitMove.srv`: console → referee (`color`, `move` | `resign` | `draw`).
-- `GameState.msg`: latched on `/chess/state` (FEN, turn, status, history, result).
-- `ExecuteMove.action`: referee → robot, a list of `PieceTask`s, with feedback
-  per stage (`approach`, `verify`, `pick`, `transport`, `place`, `return`).
-- `PieceTask.msg`: one pick-and-place job (model, colour, type, from/to label
-  and coordinates, optional promotion).
-- `VerifyPiece.srv`: robot → camera.
-- `AttachPiece` / `ReleasePiece` / `ReplacePiece`: robot → carrier.
+| Module | Contents |
+|---|---|
+| `kinematics.py` | forward kinematics from the URDF joint table; damped-least-squares IK |
+| `engine.py` | own alpha-beta engine; Stockfish wrapper |
+| `board_vision.py` | projection, colour features, self-calibrating classifier |
+| `move_inference.py` | which legal move explains an observed board |
+| `move_planner.py` | my move → ordered pick-and-place tasks |
+| `board_geometry.py` | board pose, squares, graveyard, observe pose |
+| `stations.py` | base stations for boards deeper than the arm's reach |
 
-### TF tree (per robot, simulation)
+## 4. Game logic (`chess_player`)
 
 ```
-map ──amcl──> white/odom ──ekf──> white/base_footprint ──urdf──> white/base_link
-                                                                  ├─ white/laser_link
-                                                                  ├─ white/depth_camera_link ─ white/depth_link
-                                                                  ├─ white/imu_link
-                                                                  └─ white/carrier_plate, wheels
+calibrate  → [my turn?] ── yes → think → arm → verify → push move ─┐
+                  │                                                 │
+                  no → read board until it changes and is stable ──┤
+                        → infer move → push move ───────────────────┘
 ```
 
-## 4. Modules
+- **Rules.** `python-chess` holds the position and provides legal moves,
+  check, mate, stalemate, insufficient material, the 50/75-move rules and
+  repetition.
+- **Waiting for the opponent.**
+  - The board is read every `observe_period`. A changed reading is accepted
+    only after `stable_observations` identical readings in a row, so the other
+    arm has finished and moved away.
+  - If no legal move explains the change, the status becomes
+    *opponent_move_unclear* and the robot keeps watching.
+  - The `override_opponent_move` service resolves cases the camera cannot,
+    such as an under-promotion.
+- **Verifying my move.** After its own move, the robot re-reads the board and
+  compares it with the expected occupancy. A difference is reported.
+- **Output.** `GameState` carries the FEN, history, status, the last camera
+  reading, and the engine's evaluation and principal variation.
 
-### 4.1 Chess logic and move decomposition
+## 5. Engine (`engine.py`)
 
-`python-chess` holds the logical position and decides legality, check, mate,
-stalemate, insufficient material and the 75-move and fivefold-repetition rules.
-Threefold repetition and the 50-move rule are applied when a player types `draw`.
+The internal engine is written for this project.
 
-Next to the logical board, the referee keeps a **physical state**: which model
-stands on which square, and how many pieces lie in each graveyard.
-`move_planner.plan_move()` turns a legal move into ordered tasks:
+### Search
+
+1. **Negamax with alpha-beta pruning.** Scores are always from the side to
+   move: `score = −search(child)`. Branches that cannot change the result
+   are cut (`alpha ≥ beta`).
+2. **Iterative deepening, depth 1, 2, 3, …, until the time limit**
+   (`think_time`). The best move of the last completed depth is used, so
+   there is always an answer.
+3. **Transposition table.** Positions are keyed by Zobrist hash and store
+   depth, score, bound type and best move. It avoids re-searching
+   transpositions and provides the first move to try.
+4. **Move ordering.** First the table move, then captures sorted by MVV-LVA
+   (most valuable victim, least valuable attacker), then promotions, then
+   killer moves (quiet moves that caused cut-offs at the same depth). Good
+   ordering is what makes alpha-beta efficient.
+5. **Quiescence search.** At depth 0 the search continues with captures only,
+   so a position is never judged in the middle of an exchange (the horizon
+   effect).
+6. **Terminal positions.** Mate is scored −100000 + ply, so the engine prefers
+   faster mates. Stalemate, insufficient material, repetition and the 50-move
+   rule score 0.
+
+### Evaluation
+
+Material plus the piece-square tables of the "Simplified Evaluation Function"
+(T. Michniewski). The king switches to the endgame table once queens are off
+the board.
+
+### Strength and tests
+
+In Python it searches about 3–5 plies in a few seconds. That is enough to
+find mates in one, win material, and avoid hanging the queen; the unit tests
+cover all three.
+
+`engine: stockfish` in the config uses Stockfish through UCI and falls back
+to the internal engine if Stockfish is not installed.
+
+## 6. Seeing the board (`board_vision.py`)
+
+1. **Camera pose.** The camera is on the wrist, so its pose comes from the arm:
+   `joint_states` → `robot_state_publisher` → TF `base_footprint →
+   wrist_camera_optical`. The board pose is known in `base_footprint` from the
+   config. Together they give the transform from the board to the camera.
+2. **Projection.** Each square centre is projected with the pinhole model
+   `u = fx·X/Z + cx`, `v = fy·Y/Z + cy`, using the intrinsics from
+   `camera_info`. The point used is 1.2 cm above the board (the piece top), so
+   pieces seen at an angle are sampled where they really appear.
+3. **Features.** The mean CIE Lab colour of a small window around each
+   projected point, averaged over 3 frames.
+4. **Classification.** Nearest centroid over four classes: empty light square,
+   empty dark square, white piece, black piece.
+   - **Self-calibration:** the centroids are learnt from the start position,
+     whose occupancy is known. The robot therefore adapts to any board, piece
+     set and lighting without hand-tuned thresholds.
+   - The confidence of a square is the relative margin to the nearest class
+     with a different occupancy.
+5. **Validation.** The unit tests render camera images of positions and check
+   that move sequences (including captures and castling) are recognised from
+   the images.
+
+## 7. Recognising the opponent's move (`move_inference.py`)
+
+The camera reports occupancy only (`.`, `w`, `b` per square). For every legal
+move of the opponent, the occupancy after that move is compared with the
+observation; the move with zero differing squares is the one played. This
+handles:
+
+- normal moves and captures (a square changes colour);
+- castling (four squares change);
+- en passant (three squares change);
+- promotion (assumed to a queen).
+
+A half-finished move (piece lifted, not yet placed) matches no move and is
+reported as unexplained. A tolerance of one misread square can be allowed when
+the best candidate is unique.
+
+## 8. Making a move
+
+### 8.1 Tasks (`move_planner.py`)
 
 | Move | Tasks |
 |---|---|
-| quiet move | piece `from → to` |
-| capture | victim `to → graveyard`, then piece `from → to` |
-| en passant | victim (beside the pawn) `→ graveyard`, then pawn |
-| castling | king `e → g/c`, then rook `h → f` / `a → d` |
-| promotion | (capture), pawn `from → to`, then swap model for the new piece |
+| quiet | piece from → to |
+| capture | victim → next graveyard slot, then piece from → to |
+| en passant | victim (beside the pawn) → graveyard, then pawn |
+| castling | king, then rook |
+| promotion | pawn from → to, then exchange the piece (sim: model swap; real: operator) |
 
-The referee commits the move only after the robot reports success. Physical
-and logical state therefore never diverge silently.
+### 8.2 Kinematics (`kinematics.py`)
 
-### 4.2 Board geometry and road network
+**Forward kinematics.** Built from the joint table of AgileX's LIMO + myCobot
+URDF: an origin (xyz, rpy) per joint, with each joint rotating about its z
+axis. Our URDF uses the same table, and a unit test checks the upright zero
+pose against it.
 
-The board frame has its origin at the board centre, x pointing a→h and y
-pointing 1→8. It is placed in the map frame by `(origin_x, origin_y, yaw)`,
-so the same code serves the simulated arena and a taped laboratory board.
-
-Pieces only ever stand on square centres. The lines *between* the squares are
-therefore always free lanes:
-
-- simulation: 0.8 m squares and 0.18 m pieces give 0.62 m lanes;
-- the LIMO is 0.22 m wide.
-
-`road_network.RoadNetwork` builds a graph of these lanes:
+**Inverse kinematics** uses damped least squares:
 
 ```
-        home (black)
-             |
-    +--------+--------+   ring road, 0.5 m outside the board
-    |  +--+--+--+--+  |
-    |  |  |  |  |  |  |   lanes between the squares
-  G-+--+--+--+--+--+--+-G graveyard spurs (one per slot)
-    |  +--+--+--+--+  |
-    +--------+--------+
-             |
-        home (white)
+Δq = Jᵀ (J Jᵀ + λ² I)⁻¹ e
 ```
 
-- **Nodes:** lane intersections, square-side midpoints, ring nodes and spur ends.
-- **Approach points:** to handle a piece, the robot stands on one of the four
-  midpoints of the square's sides and faces the centre. That is 0.4 m from
-  the piece, and the camera sees it from 0.3 m. A graveyard slot has one
-  approach point, between the ring road and the slot.
-- **`BoardGeometry.validate()`** rejects a layout unless all of these hold:
-  - the robot's circumscribed circle (r = 0.194 m) fits between the two pieces
-    next to a midpoint, so turning there is always collision free;
-  - the robot fits along a lane;
-  - the ring road and graveyard spurs have room to turn.
-- **Unit tests:** they check every edge of the graph against every possible
-  piece position on the board and in the graveyards.
+The error `e` has these parts:
+- 3 terms for the TCP position;
+- 2 for the tool axis pointing straight down;
+- optionally 1 for the tool yaw, used at the observe pose to point the camera
+  forward.
 
-### 4.3 Route planning and driving (autonomous, noisy motion)
+The Jacobian `J` is numerical. Steps are clipped to 0.3 rad and joints to
+±165° (myCobot limits). Several seeds are tried, and the solution nearest to
+the previous one is used, which gives smooth paths.
 
-1. **Planning:** the robot's pose is projected onto the closest road segment.
-   Multi-source Dijkstra from both ends of that segment finds the shortest route
-   to the nearest of the target's approach points. The route is simplified to
-   its corners, so it is a few axis-parallel straight segments. It is published
-   on `<robot>/route` for RViz.
-2. **Driving:** at each corner the robot turns in place towards the next corner,
-   then drives straight.
-   - Speed: v ≤ 0.3 m/s, slowing down near the corner.
-   - Steering: proportional heading control, ω = 2.5·e.
-   - A segment is finished when the remaining distance *along the segment* is
-     below 3 cm, so lateral noise never makes the robot circle a corner.
-3. **Final orientation:** at the approach point the robot turns to face the
-   piece (tolerance 0.03 rad).
-4. **Safety:** if the LiDAR sees anything closer than 0.25 m in a ±20° cone ahead
-   (for example a person, or the other robot), the robot stops and waits. After
-   60 s it gives up and reports an error.
+### 8.3 Motions (`arm_executor.py`)
 
-On a structured chessboard this is more reliable than a general costmap
-planner. In the first version, `move_base` with a DWA local planner could not
-pass between the pieces once the 5 cm costmap discretisation and the inflation
-were applied.
-
-### 4.4 Noisy motion model
-
-Gazebo's odometry is perfect. `noisy_odometry.py` corrupts each increment
-between two ground-truth poses following the odometry motion model of Thrun
-et al. (*Probabilistic Robotics*, §5.4). The increment is expressed as a
-signed forward translation and a rotation in the robot frame, which is what
-wheel encoders measure:
+Each task becomes:
 
 ```
-var(rot)   = a1·|rot|   + a2·|trans|        a1 = 0.002, a2 = 0.001
-var(trans) = a3·|trans| + a4·|rot|          a3 = 0.002, a4 = 0.00001
+above(from) → down → close → up → above(to) → down → open → up
 ```
 
-The noisy increments are integrated with the midpoint rule. This model differs
-from the textbook in two ways:
+- **Straight paths.** Each straight tool segment is sampled every 1 cm and
+  solved with IK seeded by the previous solution. The whole segment is sent as
+  one joint trajectory, timed so that no joint exceeds the speed limit.
+- **Heights.** 1.2 cm above the board to grasp, 6 cm to travel (the fingers
+  clear the tallest piece by 2 cm).
+- **After the move.** The arm returns to the observe pose so the camera can
+  verify the result.
 
-- **Rate independence.** The variances grow with the absolute (not squared)
-  increments. The error then behaves like a random walk in distance and
-  rotation, independent of the 50 Hz update rate.
-- **No "rotation towards the motion".** The textbook's rot1 is undefined
-  when the robot turns on the spot. With the simulator's 0.1 mm jitter it
-  produced huge noise in the first version and made the pose jump. A
-  regression test covers this case.
+The gripper and arm are driven through `FollowJointTrajectory`:
+- in Gazebo, by ros_control position controllers;
+- on the real arm, by `mycobot_driver.py`, which streams `send_radians` and
+  maps the finger opening to `set_gripper_value`.
 
-### 4.5 Sensor fusion and localisation (known initial pose)
+### 8.4 Reach and base stations
 
-1. **EKF** (`robot_localization`, 2D mode) fuses the noisy wheel odometry
-   (vx, vyaw) and the IMU yaw rate. It publishes `odom → base_footprint`.
-2. **AMCL** (likelihood-field laser model, 300–2000 particles) corrects the
-   drift against the known map. It publishes `map → odom`.
-   - It is initialised with the robot's **known home pose** (σ = 0.1 m).
-   - Because the pieces are not in the map, `z_rand = 0.2` accounts for
-     unexpected obstacles.
-   - The arena has four different corner landmarks, so its square shape cannot
-     cause an ambiguous localisation.
+With the tool pointing down, the myCobot 280 reaches about 7–27 cm from its
+axis, and the LIMO body extends 16 cm forward. This gives two options.
 
-### 4.6 Map
+**Fixed base (simulation default).**
+- The board is a 16 cm travel board on a table whose top (22 cm) overhangs
+  the bumper. The near rank is 10 cm from the arm axis.
+- The graveyard (3 × 5 slots) is beside the h-file.
+- The observe pose holds the tool 13 cm above the board, 4 cm towards the
+  robot. The camera, mounted 4 cm ahead of the tool and tilted 10° away from
+  the fingers, then sees all 64 squares.
+- `check_reach.py` and a unit test verify the whole layout.
 
-- **Simulation:** `generate_arena.py` writes the Gazebo world and the occupancy
-  grid (0.05 m/cell) from the same geometric description, so the map and the
-  world match exactly. CI checks that the committed files are up to date.
-- **Real robot:** the laboratory is mapped once with `gmapping`
-  (`robot_chess_navigation/gmapping.launch`). The board position in that map
-  is entered in `board_real.yaml`.
+**Base stations.**
+- For deeper boards the LIMO drives straight forward or back under the table
+  to configured offsets.
+- `stations.choose_station` picks, for each square, the nearest station from
+  which grasp and travel poses are reachable.
+- The base is moved with `cmd_vel` and odometry feedback, always with the arm
+  lifted. It returns home before the camera reads the board.
+- A unit test shows a 24 cm board needs three stations.
 
-### 4.7 Visual piece verification
+## 9. Simulation test bench
 
-Each piece carries a saturated colour band at the camera height (0.12–0.24 m).
-The band colour encodes the type; the hues are 60° apart. The body colour
-(white or black) encodes the side. `robot_chess.vision.detect_piece()` runs
-these steps:
+- **World.** `generate_world.py` builds the world from the player config, so
+  the simulated board is exactly where the player expects it: a table with
+  legs outside the robot's footprint, the board, the graveyard pad and the
+  opponent's capture area.
+- **Pieces.** 32 static models, 1.3 cm in diameter and 1.8–3 cm tall.
+- **Virtual grasp.** Grasping such small objects with simulated fingers is
+  unreliable in ODE. `chess_sim` therefore attaches the piece nearest to the
+  TCP, and only if it is within 1.5 cm of it. The arm must still position the
+  gripper correctly, or the grasp fails.
+- **Opponent stand-in.** `opponent_simulator.py` behaves like the other team's
+  robot:
+  - it only looks at the board (ground truth) and recognises my moves with
+    the same move inference;
+  - it waits until the board has been stable for 3 s;
+  - it replies with the internal engine (or random moves) and moves its
+    pieces one after the other.
+- **Noise.** The wrist camera has Gaussian image noise (σ = 0.007).
 
-1. take the central vertical strip of the image (the robot faces the piece);
-2. threshold in HSV (S ≥ 110, V ≥ 60), then apply a morphological opening;
-3. take the largest connected component as the band;
-4. compute the circular mean hue and assign the nearest type hue
-   (confidence = 1 − distance/15);
-5. take the median brightness of the low-saturation pixels just below the band
-   to decide white or black.
+## 10. Tests
 
-The `piece_vision` node classifies 5 consecutive frames and returns the
-majority vote. A mismatch is reported in the event log. With
-`abort_on_mismatch` set, the move stops instead.
+- **Unit tests** (`robot_chess_game/test`):
+  - kinematics: zero pose, IK round trips, unreachable targets, smooth seeds;
+  - layout: reachability of the whole simulation layout, base stations;
+  - engine: tactics and time limits;
+  - move recognition: every move type, half-finished moves, tolerance;
+  - vision: rendered images, calibration, out-of-view detection;
+  - move planning.
+- **End-to-end** (`smoke_test.py`, run in CI in a ROS Noetic container):
+  - six half-moves between my player and the stand-in in headless Gazebo;
+  - it checks that the player had no errors and that both robots agree on
+    every move;
+  - it checks that the Gazebo pieces match the player's position.
 
-### 4.8 Carrying pieces
+## 11. Limitations and next steps
 
-The LIMO PRO has no manipulator. The `chess_carrier` interface hides how a
-piece is moved:
-
-- **Simulation:** the piece model is set onto the robot's carrying plate and
-  follows the robot at 30 Hz until it is released on the target square.
-- **Real robot:** `manual_carrier.py` publishes an instruction for a lab
-  assistant ("put the WHITE PAWN on the robot") and waits for
-  `rosservice call /chess_carrier/confirm`.
-
-The piece mover is identical in both cases.
-
-### 4.9 Two players, two robots
-
-- The robots wait at home poses south and north of the board, outside the ring
-  road, so they never block each other.
-- Only the robot of the side to move drives.
-- The referee rejects moves out of turn and moves while a robot is busy.
-- Consoles can run on any machine on the same ROS master.
-
-On the real robot only one side has a robot. The other side is configured as
-*virtual*: its moves are typed into the console and the human moves the piece by
-hand.
-
-## 5. Simulation environment
-
-| Element | Size / position |
-|---|---|
-| walled arena | 11 m × 11 m, 0.6 m walls |
-| chessboard | 8 × 0.8 m = 6.4 m, centred at the origin |
-| ring road | 0.5 m outside the board edge |
-| graveyards | x = −4.7 m (white pieces) / +4.7 m (black pieces), 15 slots, 0.4 m apart |
-| home poses | white (0, −4.5) facing north, black (0, 4.5) facing south |
-| landmarks | box, cylinder, cylinder pair and rotated box in the corners; two wall stubs |
-| pieces | 32 static models, spawned at runtime, 0.32–0.48 m tall |
-
-## 6. Testing
-
-- **Unit tests** (`robot_chess_game/test`, pytest):
-  - geometry and layout validation of both shipped configurations;
-  - road network: every edge clear of every possible piece position, every
-    square and graveyard slot reachable from both homes, routes stay on
-    lanes when starting between nodes;
-  - move planning: captures, en passant, both castlings, promotion with
-    capture, a full game;
-  - vision: every type and colour on synthetic noisy images;
-  - noise model: zero-noise exactness, accumulation, rate independence,
-    backward motion, turning on the spot;
-  - SDF validity.
-- **Integration test** (`robot_chess_bringup/scripts/smoke_test.py`):
-  - starts the full two-robot simulation headless and checks that both robots
-    react to `cmd_vel`;
-  - plays `1. e4 e5 2. Nf3` through the referee;
-  - checks every piece's final pose in Gazebo (< 5 cm) and that the camera
-    recognised every piece;
-  - prints ground truth against estimated poses during the game.
-- GitHub Actions runs both on every push, the second inside the
-  `osrf/ros:noetic-desktop-full` container.
-
-## 7. Real robot deployment
-
-See README, section *Real LIMO PRO deployment*. In short:
-
-1. drivers;
-2. gmapping;
-3. board pose in `board_real.yaml`;
-4. `real_robot.launch color:=white`;
-5. two consoles;
-6. the assistant confirms load/unload.
-
-The laboratory board uses 0.6 m squares with thinner pieces (10 cm diameter).
-The layout is validated by the same unit tests.
-
-## 8. Limitations and possible extensions
-
-- A failed move is not rolled back physically. The referee reports it, and
-  the player fixes the board and resubmits.
-- Picking is virtual in simulation and manual on the real robot. A LIMO with
-  the myCobot arm (`limo_cobot_sim`) could replace the carrier without changing
-  the piece mover.
-- The robots only drive on the road network. An unexpected obstacle on a lane
-  makes the robot wait instead of planning around it.
-- Chess960 castling is not supported (standard chess only).
-- A chess engine could be added as a third "player" for single-human games.
+- The camera sees occupancy, not piece types, so opponent under-promotions need
+  the override service.
+- The real-arm path (`mycobot_driver.py`, camera mount, `tcp_offset`) must be
+  checked on the laboratory robot. The values in `player_real.yaml` and in the
+  URDF's `wrist_camera_joint` are where to adapt it.
+- A failed arm move is reported but not undone automatically.
+- A fixed overhead camera would also work: add its static TF and remap
+  `board_vision`'s image topics. The vision code only needs the camera pose.
