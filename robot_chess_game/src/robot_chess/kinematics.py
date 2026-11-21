@@ -15,7 +15,9 @@ Frames
 
 Inverse kinematics: damped least squares on 5 constraints - TCP position
 (3) and tool axis pointing straight down (2); the rotation about the tool
-axis is left free (chess pieces are round when grasped from above).
+axis is left free (chess pieces are round when grasped from above) unless a
+yaw is requested (6th constraint: direction of the flange x axis), which is
+used to point the wrist camera at the board.
 """
 import math
 
@@ -89,13 +91,20 @@ class MyCobotKinematics(object):
         return self.flange(q) @ offset
 
     # ------------------------------------------------------------- inverse
-    def _error(self, q, target):
-        p, z = self.tcp(q)
-        return np.concatenate([target - p, np.cross(z, DOWN)[:2]])
+    def _error(self, q, target, yaw=None):
+        f = self.flange(q)
+        z = f[:3, 2]
+        p = f[:3, 3] + self.tcp_offset * z
+        e = [target - p, np.cross(z, DOWN)[:2]]
+        if yaw is not None:
+            x = f[:3, 0]
+            e.append([math.cos(yaw) * x[1] - math.sin(yaw) * x[0]])
+        return np.concatenate(e)
 
-    def ik_down(self, target, seed=None, tolerance=5e-4, iterations=300):
+    def ik_down(self, target, seed=None, yaw=None, tolerance=5e-4, iterations=300):
         """Joint angles that put the TCP at `target` (base_footprint) with
-        the tool pointing straight down, or None if unreachable.
+        the tool pointing straight down, or None if unreachable.  `yaw`
+        (optional): direction of the flange x axis in the horizontal plane.
 
         Several seeds are tried; the solution closest to `seed` wins."""
         target = np.asarray(target, float)
@@ -105,7 +114,7 @@ class MyCobotKinematics(object):
                   [math.atan2(target[1], target[0]), -1.0, -0.6, 0.0, 0.0, 0.0]]
         best = None
         for s in seeds:
-            q = self._solve(target, np.array(s, float), tolerance, iterations)
+            q = self._solve(target, np.array(s, float), yaw, tolerance, iterations)
             if q is None:
                 continue
             ref = np.array(seed if seed is not None else seeds[0], float)
@@ -116,25 +125,31 @@ class MyCobotKinematics(object):
                 break
         return None if best is None else [float(v) for v in best[1]]
 
-    def _solve(self, target, q, tolerance, iterations):
+    def _solve(self, target, q, yaw, tolerance, iterations):
         limits = np.array(JOINT_LIMITS)
         damping = 0.03
         h = 1e-6
+        n = 5 if yaw is None else 6
         for _ in range(iterations):
-            e = self._error(q, target)
+            e = self._error(q, target, yaw)
             if np.linalg.norm(e[:3]) < tolerance and np.linalg.norm(e[3:]) < 2e-3:
-                return q
-            jac = np.zeros((5, 6))
+                if yaw is None or self._yaw_ok(q, yaw):
+                    return q
+            jac = np.zeros((n, 6))
             for i in range(6):
                 dq = q.copy()
                 dq[i] += h
-                jac[:, i] = -(self._error(dq, target) - e) / h
-            step = jac.T @ np.linalg.solve(jac @ jac.T + damping ** 2 * np.eye(5), e)
+                jac[:, i] = -(self._error(dq, target, yaw) - e) / h
+            step = jac.T @ np.linalg.solve(jac @ jac.T + damping ** 2 * np.eye(n), e)
             norm = np.linalg.norm(step)
             if norm > 0.3:
                 step *= 0.3 / norm
             q = np.clip(q + step, -limits, limits)
         return None
+
+    def _yaw_ok(self, q, yaw):
+        x = self.flange(q)[:3, 0]
+        return math.cos(yaw) * x[0] + math.sin(yaw) * x[1] > 0.99
 
     def reachable(self, target, seed=None):
         return self.ik_down(target, seed) is not None
